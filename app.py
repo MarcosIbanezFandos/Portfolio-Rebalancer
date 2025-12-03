@@ -91,6 +91,7 @@ PORTFOLIO_FILE = "cartera.json"
 PLANS_FILE = "planes.json"
 MASTER_ASSETS_FILE = "activos_master.json"
 PORTFOLIOS_FILE = "carteras.json"
+CUSTOM_ASSETS_FILE = "activos_custom.json"
 
 def load_plans():
     if os.path.exists(PLANS_FILE):
@@ -191,6 +192,30 @@ def load_master_assets():
     ]
 
 
+# === Helpers para activos personalizados del usuario ===
+def load_custom_assets():
+    """Carga activos personalizados del usuario desde un JSON local.
+
+    El fichero debe llamarse 'activos_custom.json' y contener una lista de objetos
+    con, al menos, la clave 'nombre' (y opcionalmente 'tipo', 'ticker', 'isin').
+    """
+    if os.path.exists(CUSTOM_ASSETS_FILE):
+        try:
+            with open(CUSTOM_ASSETS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            return []
+    return []
+
+
+def save_custom_assets(custom_assets: list) -> None:
+    """Guarda la lista de activos personalizados del usuario en 'activos_custom.json'."""
+    with open(CUSTOM_ASSETS_FILE, "w", encoding="utf-8") as f:
+        json.dump(custom_assets, f, ensure_ascii=False, indent=2)
+
+
 
 import streamlit as st
 import pandas as pd
@@ -274,19 +299,83 @@ with tab1:
         "3. Pulsa el botón para ver cómo repartir el dinero."
     )
 
-    # Cargamos listado maestro de activos (tus ETFs + lo que vayas añadiendo al JSON local)
+    # Cargamos listado maestro de activos (tus ETFs) + universo completo + personalizados
     master_assets = load_master_assets()
-    opciones_activos = [a.get("nombre", "") for a in master_assets]
+    universo_df = load_universe_csv()
+    custom_assets = load_custom_assets()
 
-    # Datos iniciales de ejemplo por defecto (usando nombres del listado maestro cuando sea posible)
-    nombres_defecto = opciones_activos if len(opciones_activos) >= 6 else [
-        "S&P 500 USD (Acc)",
-        "Core MSCI Europe EUR (Acc)",
-        "FTSE Emerging Markets USD (Acc)",
-        "MSCI World Small Cap USD (Acc)",
-        "FTSE Japan USD (Acc)",
-        "Bitcoin",
-    ]
+    # UI para crear activos personalizados locales
+    with st.expander("➕ Añadir activo personalizado a tu lista"):
+        nombre_custom = st.text_input(
+            "Nombre del activo personalizado",
+            key="nombre_activo_pers",
+        )
+        tipo_custom = st.selectbox(
+            "Tipo del activo personalizado",
+            options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
+            key="tipo_activo_pers",
+        )
+        ticker_custom = st.text_input(
+            "Ticker (opcional)",
+            key="ticker_activo_pers",
+        )
+        isin_custom = st.text_input(
+            "ISIN (opcional)",
+            key="isin_activo_pers",
+        )
+
+        if st.button("Añadir activo personalizado", key="btn_add_custom"):
+            if not nombre_custom.strip():
+                st.error("El nombre del activo no puede estar vacío.")
+            else:
+                existentes = load_custom_assets()
+                existentes.append(
+                    {
+                        "nombre": nombre_custom.strip(),
+                        "tipo": tipo_custom,
+                        "ticker": ticker_custom.strip(),
+                        "isin": isin_custom.strip(),
+                    }
+                )
+                save_custom_assets(existentes)
+                st.success(f"Activo personalizado '{nombre_custom}' añadido correctamente.")
+                st.rerun()
+
+    # Construimos la lista de opciones de activos para el selector de la tabla
+    opciones_activos = []
+    vistos = set()
+
+    def _add_nombre(n):
+        n = str(n).strip()
+        if n and n not in vistos:
+            vistos.add(n)
+            opciones_activos.append(n)
+
+    # Primero tus activos "core" del master
+    for a in master_assets:
+        _add_nombre(a.get("nombre", a.get("Name", "")))
+
+    # Luego los personalizados que hayas creado tú
+    for a in custom_assets:
+        _add_nombre(a.get("nombre", ""))
+
+    # Finalmente, todo el universo de Trade Republic (solo columna Name)
+    if not universo_df.empty and "Name" in universo_df.columns:
+        for n in universo_df["Name"].dropna().unique().tolist():
+            _add_nombre(n)
+
+    # Datos iniciales de ejemplo por defecto (usando nombres "core" cuando sea posible)
+    if len(opciones_activos) >= 6:
+        nombres_defecto = opciones_activos[:6]
+    else:
+        nombres_defecto = [
+            "S&P 500 USD (Acc)",
+            "Core MSCI Europe EUR (Acc)",
+            "FTSE Emerging Markets USD (Acc)",
+            "MSCI World Small Cap USD (Acc)",
+            "FTSE Japan USD (Acc)",
+            "Bitcoin",
+        ]
 
     default_data = pd.DataFrame(
         {

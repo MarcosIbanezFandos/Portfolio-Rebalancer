@@ -98,7 +98,6 @@ También hay:
 Aquí puedes montar una cartera de análisis usando el universo grande de activos del CSV.
 	1.	En la parte de búsqueda:
         •	Escribe parte del nombre, un ISIN o una palabra clave.
-        •	Se listan hasta 50 resultados del CSV (TradeRepublic_Activos_Completo.csv).
         •	Selecciona uno y ponle un valor actual (€).
         •	Pulsa “➕ Añadir activo a mi cartera de análisis”.
 	2.	Abajo verás tu cartera de análisis:
