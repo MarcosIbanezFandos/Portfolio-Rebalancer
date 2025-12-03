@@ -89,7 +89,6 @@ import json
 
 PORTFOLIO_FILE = "cartera.json"
 PLANS_FILE = "planes.json"
-MASTER_ASSETS_FILE = "activos_master.json"
 PORTFOLIOS_FILE = "carteras.json"
 CUSTOM_ASSETS_FILE = "activos_custom.json"
 
@@ -126,70 +125,6 @@ def save_portfolios(portfolios: dict) -> None:
     """Guarda el diccionario de carteras nombradas en 'carteras.json'."""
     with open(PORTFOLIOS_FILE, "w", encoding="utf-8") as f:
         json.dump(portfolios, f, ensure_ascii=False, indent=2)
-
-
-def load_master_assets():
-    """Carga el listado maestro de activos desde un JSON local.
-
-    El fichero debe llamarse 'activos_master.json' y contener una lista de objetos
-    con, al menos, las claves: nombre, ticker, tipo, isin (opcionalmente más).
-    Si no existe o hay un error, se devuelve un listado por defecto con tus
-    6 activos principales.
-    """
-    if os.path.exists(MASTER_ASSETS_FILE):
-        try:
-            with open(MASTER_ASSETS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list) and data:
-                return data
-        except Exception:
-            pass
-
-    # Fallback: listado mínimo con tus 5 ETFs + Bitcoin
-    return [
-        {
-            "nombre": "Core MSCI Europe EUR (Acc)",
-            "ticker": "SMEA",
-            "tipo": "ETF",
-            "isin": "IE00B4K48X80",
-            "plataforma": "Trade Republic",
-        },
-        {
-            "nombre": "S&P 500 USD (Acc)",
-            "ticker": "VUAG",
-            "tipo": "ETF",
-            "isin": "IE00BFMXXD54",
-            "plataforma": "Trade Republic",
-        },
-        {
-            "nombre": "MSCI World Small Cap USD (Acc)",
-            "ticker": "WSML",
-            "tipo": "ETF",
-            "isin": "IE00BF4RFH31",
-            "plataforma": "Trade Republic",
-        },
-        {
-            "nombre": "FTSE Japan USD (Acc)",
-            "ticker": "VJPN",
-            "tipo": "ETF",
-            "isin": "IE00BFMXYX26",
-            "plataforma": "Trade Republic",
-        },
-        {
-            "nombre": "FTSE Emerging Markets USD (Acc)",
-            "ticker": "VFEG",
-            "tipo": "ETF",
-            "isin": "IE00BK5BR733",
-            "plataforma": "Trade Republic",
-        },
-        {
-            "nombre": "Bitcoin",
-            "ticker": "BTC",
-            "tipo": "Criptomoneda",
-            "isin": "",
-            "plataforma": "Trade Republic",
-        },
-    ]
 
 
 # === Helpers para activos personalizados del usuario ===
@@ -299,10 +234,85 @@ with tab1:
         "3. Pulsa el botón para ver cómo repartir el dinero."
     )
 
-    # Cargamos listado maestro de activos (tus ETFs) + universo completo + personalizados
-    master_assets = load_master_assets()
+    # Cargamos listado maestro de activos: universo completo + personalizados
     universo_df = load_universe_csv()
     custom_assets = load_custom_assets()
+
+    # Diccionario de metadatos:
+    # - Por nombre de activo: {nombre: {"tipo": ..., "isin": ...}}
+    # - Por ISIN: {isin: {"nombre": ..., "tipo": ..., "isin": ...}}
+    asset_meta_by_name = {}
+    asset_meta_by_isin = {}
+
+    def register_asset(name, tipo=None, isin=None):
+        name = str(name).strip()
+        isin = (str(isin).strip() if isin is not None else "").upper()
+        tipo = tipo or ""
+        if not name and not isin:
+            return
+
+        # Por nombre
+        if name:
+            if name not in asset_meta_by_name:
+                asset_meta_by_name[name] = {
+                    "tipo": tipo or "",
+                    "isin": isin or "",
+                }
+            else:
+                if not asset_meta_by_name[name].get("tipo") and tipo:
+                    asset_meta_by_name[name]["tipo"] = tipo
+                if not asset_meta_by_name[name].get("isin") and isin:
+                    asset_meta_by_name[name]["isin"] = isin
+
+        # Por ISIN
+        if isin:
+            if isin not in asset_meta_by_isin:
+                asset_meta_by_isin[isin] = {
+                    "nombre": name,
+                    "tipo": tipo or "",
+                    "isin": isin,
+                }
+            else:
+                if not asset_meta_by_isin[isin].get("nombre") and name:
+                    asset_meta_by_isin[isin]["nombre"] = name
+                if not asset_meta_by_isin[isin].get("tipo") and tipo:
+                    asset_meta_by_isin[isin]["tipo"] = tipo
+
+    # --- Normalización de tipos de activo del CSV ---
+    def normalize_asset_type(raw_type: str) -> str:
+        """Normaliza el tipo de activo del CSV a las categorías usadas en la app."""
+        if not raw_type:
+            return ""
+        s = str(raw_type).strip().lower()
+        if any(x in s for x in ["etf", "index fund", "fund", "fonds"]):
+            return "ETF"
+        if any(x in s for x in ["stock", "share", "equity", "aktion", "acción", "acciones"]):
+            return "Acción"
+        if any(x in s for x in ["bond", "renta fija", "obligat"]):
+            return "Bono"
+        if any(x in s for x in ["crypto", "bitcoin", "btc", "eth"]):
+            return "Criptomoneda"
+        if any(x in s for x in ["derivative", "option", "future", "warrant"]):
+            return "Derivado"
+        if any(x in s for x in ["fund", "sicav", "fond"]):
+            return "Fondo"
+        return "Otro"
+
+    # Añadimos activos personalizados
+    for a in custom_assets:
+        nombre = a.get("nombre")
+        tipo = a.get("tipo") or ""
+        isin = a.get("isin") or ""
+        register_asset(nombre, tipo=tipo, isin=isin)
+
+    # Añadimos el universo completo (CSV)
+    if not universo_df.empty:
+        for _, row_uni in universo_df.iterrows():
+            nombre = row_uni.get("Name", "")
+            tipo_raw = row_uni.get("Type", "")
+            tipo_norm = normalize_asset_type(tipo_raw)
+            isin = row_uni.get("ISIN", "")
+            register_asset(nombre, tipo=tipo_norm, isin=isin)
 
     # UI para crear activos personalizados locales
     with st.expander("➕ Añadir activo personalizado a tu lista"):
@@ -341,56 +351,9 @@ with tab1:
                 st.success(f"Activo personalizado '{nombre_custom}' añadido correctamente.")
                 st.rerun()
 
-    # Construimos la lista de opciones de activos para el selector de la tabla
-    opciones_activos = []
-    vistos = set()
-
-    def _add_nombre(n):
-        n = str(n).strip()
-        if n and n not in vistos:
-            vistos.add(n)
-            opciones_activos.append(n)
-
-    # Primero tus activos "core" del master
-    for a in master_assets:
-        _add_nombre(a.get("nombre", a.get("Name", "")))
-
-    # Luego los personalizados que hayas creado tú
-    for a in custom_assets:
-        _add_nombre(a.get("nombre", ""))
-
-    # Finalmente, todo el universo de Trade Republic (solo columna Name)
-    if not universo_df.empty and "Name" in universo_df.columns:
-        for n in universo_df["Name"].dropna().unique().tolist():
-            _add_nombre(n)
-
-    # Datos iniciales de ejemplo por defecto (usando nombres "core" cuando sea posible)
-    if len(opciones_activos) >= 6:
-        nombres_defecto = opciones_activos[:6]
-    else:
-        nombres_defecto = [
-            "S&P 500 USD (Acc)",
-            "Core MSCI Europe EUR (Acc)",
-            "FTSE Emerging Markets USD (Acc)",
-            "MSCI World Small Cap USD (Acc)",
-            "FTSE Japan USD (Acc)",
-            "Bitcoin",
-        ]
-
+    # Tabla vacía por defecto: el usuario añadirá activos mediante el editor
     default_data = pd.DataFrame(
-        {
-            "Activo": nombres_defecto[:6],
-            "Tipo": [
-                "ETF",
-                "ETF",
-                "ETF",
-                "ETF",
-                "ETF",
-                "Criptomoneda",
-            ],
-            "Valor_actual_€": [500.0, 300.0, 120.0, 110.0, 90.0, 100.0],
-            "Peso_objetivo_%": [42.0, 25.0, 10.0, 9.0, 9.0, 5.0],
-        }
+        columns=["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]
     )
 
     # Inicializar cartera en sesión cargando de fichero si existe
@@ -403,68 +366,177 @@ with tab1:
         else:
             st.session_state["cartera_df"] = default_data.copy()
 
+    # Construimos la lista de opciones de activos para el selector de la tabla
+    opciones_activos = []
+    vistos = set()
+
+    def _add_nombre(n):
+        n = str(n).strip()
+        if n and n not in vistos:
+            vistos.add(n)
+            opciones_activos.append(n)
+
+    # 1) Activos personalizados
+    for a in custom_assets:
+        _add_nombre(a.get("nombre", ""))
+
+    # 2) Universo completo de Trade Republic (columna Name)
+    if not universo_df.empty and "Name" in universo_df.columns:
+        for n in universo_df["Name"].dropna().unique().tolist():
+            _add_nombre(n)
+
+    # 3) Cualquier activo que ya esté en la cartera actual (para que nunca desaparezca del desplegable)
+    cartera_df_current = st.session_state["cartera_df"]
+    if "Activo" in cartera_df_current.columns:
+        for n in cartera_df_current["Activo"].dropna().tolist():
+            _add_nombre(n)
+
+    # Lista de ISINs disponibles para el selector (con buscador)
+    opciones_isin_set = set(
+        isin
+        for isin in asset_meta_by_isin.keys()
+        if isinstance(isin, str) and isin.strip()
+    )
+    if "ISIN" in cartera_df_current.columns:
+        for i in cartera_df_current["ISIN"].dropna().tolist():
+            s = str(i).strip().upper()
+            if s:
+                opciones_isin_set.add(s)
+    opciones_isin = sorted(opciones_isin_set)
+
     st.subheader("📋 Activos de la cartera")
 
-    # Partimos de la cartera de sesión y añadimos la columna 'Incluir' si no existe
+    # Partimos de la cartera de sesión (sin columna 'Incluir')
     source_df = st.session_state["cartera_df"].copy()
-    if "Incluir" not in source_df.columns:
-        source_df["Incluir"] = True
 
-    # Reordenamos columnas para que 'Incluir' sea la primera
-    columnas_orden = ["Incluir", "Activo", "Tipo", "Valor_actual_€", "Peso_objetivo_%"]
+    columnas_orden = ["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]
     for col in columnas_orden:
         if col not in source_df.columns:
-            # Valores por defecto razonables
-            if col == "Incluir":
-                source_df[col] = True
-            elif col in ["Valor_actual_€", "Peso_objetivo_%"]:
+            if col in ["Valor_actual_€", "Peso_objetivo_%"]:
                 source_df[col] = 0.0
             else:
                 source_df[col] = ""
     source_df = source_df[columnas_orden]
 
+    # Forzamos un índice limpio (1, 2, 3, ...) para evitar índices None/NaN
+    source_df = source_df.reset_index(drop=True)
+    source_df.index = source_df.index + 1
+
     # Editor de cartera (los cambios se quedan en el estado interno del widget hasta pulsar el botón de actualizar)
     df_activos = st.data_editor(
         source_df,
         num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
         column_config={
-            "Incluir": st.column_config.CheckboxColumn(
-                "Incluir",
-                help="Marca los activos que quieres usar en el pie chart y en los cálculos.",
-            ),
             "Activo": st.column_config.SelectboxColumn(
                 "Activo",
                 options=opciones_activos,
-                help="Selecciona el activo de tu listado maestro (activos_master.json).",
+                help="Selecciona el activo desde la base de datos/universo.",
             ),
             "Tipo": st.column_config.SelectboxColumn(
                 "Tipo",
                 options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
-                help="Selecciona el tipo de activo para tenerlo clasificado.",
+                help="Se rellena automáticamente al seleccionar el activo si se conoce, pero puedes ajustarlo.",
+            ),
+            "ISIN": st.column_config.SelectboxColumn(
+                "ISIN",
+                options=opciones_isin,
+                help=(
+                    "Selecciona o busca un ISIN. Si el ISIN existe en la base de datos, "
+                    "se autocompletará el nombre del activo y su tipo."
+                ),
             ),
             "Valor_actual_€": st.column_config.NumberColumn(
                 "Valor actual (€)",
                 min_value=0.0,
                 step=10.0,
+                default=0.0,
             ),
             "Peso_objetivo_%": st.column_config.NumberColumn(
                 "Peso objetivo (%)",
                 min_value=0.0,
                 step=1.0,
+                default=0.0,
             ),
         },
         key="cartera_editor",
     )
 
-    # Mostrar suma de pesos objetivo justo debajo de la tabla
+    # Autocompletar Activo, Tipo e ISIN a partir de lo que haya en la fila
+    df_autocomplete = df_activos.copy()
+    if {"Activo", "ISIN"}.issubset(df_autocomplete.columns):
+        for idx, row in df_autocomplete.iterrows():
+            nombre = str(row.get("Activo", "")).strip()
+            isin = str(row.get("ISIN", "")).strip().upper()
+
+            meta = None
+
+            # Prioridad 1: si hay ISIN en la fila, usamos ese como referencia
+            if isin:
+                meta = asset_meta_by_isin.get(isin)
+
+            # Prioridad 2: si no se ha encontrado meta por ISIN, probamos por nombre
+            if not meta and nombre:
+                meta_name = asset_meta_by_name.get(nombre)
+                if meta_name:
+                    isin_meta = meta_name.get("isin", "")
+                    meta = {
+                        "nombre": nombre,
+                        "tipo": meta_name.get("tipo", ""),
+                        "isin": isin_meta,
+                    }
+
+            if meta:
+                # Aplicamos la meta a la fila: nombre, tipo e ISIN se sincronizan SIEMPRE
+                if meta.get("nombre"):
+                    df_autocomplete.at[idx, "Activo"] = meta["nombre"]
+                if meta.get("tipo"):
+                    df_autocomplete.at[idx, "Tipo"] = meta["tipo"]
+                if meta.get("isin"):
+                    df_autocomplete.at[idx, "ISIN"] = meta["isin"]
+
+        # Asignar 0 por defecto a Valor_actual_€ y Peso_objetivo_% cuando haya activo/ISIN pero no valores
+        for idx, row in df_autocomplete.iterrows():
+            nombre = str(row.get("Activo", "")).strip()
+            isin = str(row.get("ISIN", "")).strip()
+            if not nombre and not isin:
+                continue  # fila totalmente vacía
+
+            # Valor actual
+            val = row.get("Valor_actual_€")
+            if val is None or (isinstance(val, str) and not val.strip()):
+                df_autocomplete.at[idx, "Valor_actual_€"] = 0.0
+
+            # Peso objetivo
+            peso = row.get("Peso_objetivo_%")
+            if peso is None or (isinstance(peso, str) and not peso.strip()):
+                df_autocomplete.at[idx, "Peso_objetivo_%"] = 0.0
+
+    # Aseguramos que las columnas numéricas sean numéricas y sin NaN
+    if "Valor_actual_€" in df_autocomplete.columns:
+        df_autocomplete["Valor_actual_€"] = pd.to_numeric(
+            df_autocomplete["Valor_actual_€"], errors="coerce"
+        ).fillna(0.0)
+    if "Peso_objetivo_%" in df_autocomplete.columns:
+        df_autocomplete["Peso_objetivo_%"] = pd.to_numeric(
+            df_autocomplete["Peso_objetivo_%"], errors="coerce"
+        ).fillna(0.0)
+
+    df_activos = df_autocomplete
+
+    # Guardamos inmediatamente la versión autocompletada en sesión,
+    # de forma que cualquier cambio en la tabla se refleje en la cartera
+    st.session_state["cartera_df"] = df_activos.copy()
+
+    # Mostrar suma de pesos objetivo justo debajo de la tabla (solo filas con Activo no vacío)
     show_normalize_button = False
     try:
         df_live = df_activos.copy()
-        if "Incluir" in df_live.columns:
-            df_live = df_live[df_live["Incluir"].astype(bool)]
+        df_live = df_live[df_live["Activo"].astype(str).str.strip().ne("")]
         suma_pesos_live = float(df_live["Peso_objetivo_%"].sum())
         st.markdown(
-            f"**Suma de pesos objetivo (solo filas marcadas) en tiempo real: {suma_pesos_live:.2f}%**"
+            f"**Suma de pesos objetivo (filas con activo) en tiempo real: {suma_pesos_live:.2f}%**"
         )
         # Solo mostramos el botón si la suma se pasa o se queda corta fuera del rango 98.5–101.5%
         if not (98.5 <= suma_pesos_live <= 101.5):
@@ -475,126 +547,98 @@ with tab1:
     # Botón para normalizar pesos objetivo a 100% (solo si la suma está fuera del rango)
     if show_normalize_button and st.button("⚖️ Normalizar pesos objetivo al 100%", key="normalizar_pesos"):
         try:
-            # Partimos de lo que hay ahora mismo en el editor
             df_norm = df_activos.copy()
-
-            # Aseguramos columna 'Incluir'
-            if "Incluir" in df_norm.columns:
-                mask_incluir = df_norm["Incluir"].astype(bool)
-            else:
-                mask_incluir = [True] * len(df_norm)
-
-            # Ponemos a 0 el peso objetivo de las filas NO incluidas
-            df_norm.loc[~pd.Series(mask_incluir).values, "Peso_objetivo_%"] = 0.0
-
-            # Normalizamos SOLO sobre las filas incluidas
-            suma = df_norm.loc[mask_incluir, "Peso_objetivo_%"].sum()
+            # Consideramos solo filas con activo no vacío
+            mask_valid = df_norm["Activo"].astype(str).str.strip().ne("")
+            suma = df_norm.loc[mask_valid, "Peso_objetivo_%"].sum()
 
             if suma > 0:
-                df_norm.loc[mask_incluir, "Peso_objetivo_%"] = (
-                    df_norm.loc[mask_incluir, "Peso_objetivo_%"] / suma * 100.0
+                df_norm.loc[mask_valid, "Peso_objetivo_%"] = (
+                    df_norm.loc[mask_valid, "Peso_objetivo_%"] / suma * 100.0
                 )
-                # Guardamos en la cartera de sesión y recargamos para que la tabla se actualice
                 st.session_state["cartera_df"] = df_norm
-                st.success("Pesos normalizados correctamente al 100% (solo filas incluidas).")
+                st.success("Pesos normalizados correctamente al 100% sobre las filas con activo.")
                 st.rerun()
             else:
-                st.error("La suma de pesos objetivo de las filas incluidas es 0. No se puede normalizar.")
+                st.error("La suma de pesos objetivo de las filas con activo es 0. No se puede normalizar.")
         except Exception as e:
             st.error(f"No se pudo normalizar los pesos: {e}")
 
-    # Botón para confirmar y volcar estos activos a la cartera de sesión
-    if st.button("✅ Añadir estos activos a mi cartera"):
-        st.session_state["cartera_df"] = df_activos.copy()
-        st.session_state["cartera_confirmada"] = True
-        st.success("Cartera actualizada con los activos seleccionados.")
+    # Filtrar filas vacías (sin activo) para el resto de cálculos y gráficos
+    df_activos = df_activos[df_activos["Activo"].astype(str).str.strip().ne("")].copy()
 
-    # Tomamos la cartera confirmada desde sesión (si la hay)
-    cartera_confirmada = st.session_state.get("cartera_confirmada", False)
-    df_cartera = st.session_state.get("cartera_df", default_data).copy()
-
-    # Aseguramos columna 'Incluir'
-    if "Incluir" not in df_cartera.columns:
-        df_cartera["Incluir"] = True
-
-    # Filtrar filas vacías y solo las marcadas
-    df_activos = df_cartera[
-        df_cartera["Incluir"].astype(bool)
-        & df_cartera["Activo"].astype(str).str.strip().ne("")
-    ].copy()
-
-    # Gráfico de tarta con la distribución actual de la cartera
-    if cartera_confirmada and not df_activos.empty:
+    # Gráfico de tarta con la distribución actual de la cartera (en tiempo real)
+    if not df_activos.empty:
         total_valor = float(df_activos["Valor_actual_€"].sum()) if "Valor_actual_€" in df_activos else 0.0
 
-        if total_valor > 0:
+        # Si no hay valor invertido, no intentamos dibujar el pie chart
+        if total_valor <= 0:
+            st.info(
+                "Introduce algún valor actual (> 0 €) en tus activos para poder mostrar el gráfico de distribución."
+            )
+        else:
             pesos_actuales = df_activos["Valor_actual_€"] / total_valor
-        else:
-            pesos_actuales = df_activos["Valor_actual_€"] * 0.0
 
-        labels = df_activos["Activo"].tolist()
-        tipos = df_activos["Tipo"].tolist()
+            labels = df_activos["Activo"].tolist()
+            tipos = df_activos["Tipo"].tolist()
 
-        # Mapa de colores por tipo de activo (para el pie chart)
-        type_colors = {
-            "ETF": "#1f77b4",
-            "Acción": "#ff7f0e",
-            "Bono": "#2ca02c",
-            "Derivado": "#d62728",
-            "Criptomoneda": "#9467bd",
-            "Fondo": "#8c564b",
-            "Otro": "#7f7f7f",
-        }
-        colors = [type_colors.get(t, "#7f7f7f") for t in tipos]
+            # Mapa de colores por tipo de activo (para el pie chart)
+            type_colors = {
+                "ETF": "#1f77b4",
+                "Acción": "#ff7f0e",
+                "Bono": "#2ca02c",
+                "Derivado": "#d62728",
+                "Criptomoneda": "#9467bd",
+                "Fondo": "#8c564b",
+                "Otro": "#7f7f7f",
+            }
+            colors = [type_colors.get(t, "#7f7f7f") for t in tipos]
 
-        # Ajustar texto al tema actual de Streamlit (oscuro / claro)
-        theme_base = st.get_option("theme.base")
-        text_color = st.get_option("theme.textColor")
+            # Ajustar texto al tema actual de Streamlit (oscuro / claro)
+            theme_base = st.get_option("theme.base")
+            text_color = st.get_option("theme.textColor")
 
-        # Si no hay color definido o estamos en tema oscuro, forzamos blanco para máxima legibilidad.
-        if theme_base == "dark" or not text_color:
-            text_color = "#FFFFFF"
-        else:
-            text_color = text_color or "#000000"
+            # Si no hay color definido o estamos en tema oscuro, forzamos blanco para máxima legibilidad.
+            if theme_base == "dark" or not text_color:
+                text_color = "#FFFFFF"
+            else:
+                text_color = text_color or "#000000"
 
-        fig, ax = plt.subplots()
-        # Fondo transparente para integrarse con el tema (oscuro o claro)
-        fig.patch.set_facecolor("none")
-        ax.set_facecolor("none")
+            fig, ax = plt.subplots()
+            fig.patch.set_facecolor("none")
+            ax.set_facecolor("none")
 
-        wedges, texts, autotexts = ax.pie(
-            pesos_actuales,
-            labels=labels,
-            autopct="%1.1f%%",
-            startangle=90,
-            colors=colors,
-        )
-        ax.axis("equal")
+            wedges, texts, autotexts = ax.pie(
+                pesos_actuales,
+                labels=labels,
+                autopct="%1.1f%%",
+                startangle=90,
+                colors=colors,
+            )
+            ax.axis("equal")
 
-        # Colorear los textos según el color del tema actual
-        for t in texts + autotexts:
-            t.set_color(text_color)
+            for t in texts + autotexts:
+                t.set_color(text_color)
 
-        st.markdown("#### Distribución actual de la cartera (por valor de mercado)")
-        st.pyplot(fig)
+            st.markdown("#### Distribución actual de la cartera (por valor de mercado)")
+            st.pyplot(fig)
 
-        # Leyenda compacta por tipo de activo (texto pequeño bajo el gráfico)
-        unique_tipos = []
-        unique_colors = []
-        for t, c in zip(tipos, colors):
-            if t not in unique_tipos:
-                unique_tipos.append(t)
-                unique_colors.append(c)
+            unique_tipos = []
+            unique_colors = []
+            for t, c in zip(tipos, colors):
+                if t not in unique_tipos:
+                    unique_tipos.append(t)
+                    unique_colors.append(c)
 
-        if unique_tipos:
-            legend_lines = []
-            for t, c in zip(unique_tipos, unique_colors):
-                legend_lines.append(
-                    f"<span style='font-size:0.85em;'><span style='color:{c}'>■</span> {t}</span>"
-                )
-            st.markdown("<br/>".join(legend_lines), unsafe_allow_html=True)
-    elif not cartera_confirmada:
-        st.info("Pulsa **'✅ Añadir estos activos a mi cartera'** para actualizar la cartera y ver el gráfico.")
+            if unique_tipos:
+                legend_lines = []
+                for t, c in zip(unique_tipos, unique_colors):
+                    legend_lines.append(
+                        f"<span style='font-size:0.85em;'><span style='color:{c}'>■</span> {t}</span>"
+                    )
+                st.markdown("<br/>".join(legend_lines), unsafe_allow_html=True)
+    else:
+        st.info("Añade activos a la tabla y asigna un valor actual para ver el gráfico de distribución.")
 
     col_left, col_right = st.columns(2)
 
@@ -663,7 +707,6 @@ with tab1:
                 df_plan = pd.DataFrame(
                     {
                         "Activo": list(plan.keys()),
-                        "Tipo": [asset_types.get(a, "") for a in plan.keys()],
                         "Aportación_mes_€": list(plan.values()),
                     }
                 )
@@ -850,8 +893,7 @@ with tab1:
                 else:
                     try:
                         st.session_state["cartera_df"] = pd.DataFrame(datos)
-                        st.session_state["cartera_confirmada"] = False
-                        st.success(f"Cartera '{cartera_seleccionada}' cargada. Revisa la tabla y pulsa '✅ Añadir estos activos a mi cartera' si estás conforme.")
+                        st.success(f"Cartera '{cartera_seleccionada}' cargada. Revisa/edita la tabla; los cambios se aplican automáticamente.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error al reconstruir la cartera desde '{PORTFOLIOS_FILE}': {e}")
