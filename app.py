@@ -585,194 +585,202 @@ with tab1:
                 st.success(f"Activo personalizado '{nombre_custom}' añadido correctamente.")
                 st.rerun()
 
-    # Tabla vacía por defecto: el usuario añadirá activos mediante el editor
+    # Tabla vacía por defecto con esquema y tipos bien definidos
     default_data = pd.DataFrame(
-        columns=["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]
+        {
+            "Activo": pd.Series(dtype=str),
+            "Tipo": pd.Series(dtype=str),
+            "ISIN": pd.Series(dtype=str),
+            "Valor_actual_€": pd.Series(dtype=float),
+            "Peso_objetivo_%": pd.Series(dtype=float),
+        }
     )
+
+    def ensure_cartera_schema(df: pd.DataFrame) -> pd.DataFrame:
+        """Normaliza columnas y tipos de la cartera para que siempre encajen con data_editor."""
+        df = df.copy()
+
+        # Aseguramos que existan todas las columnas
+        for col, default in [
+            ("Activo", ""),
+            ("Tipo", ""),
+            ("ISIN", ""),
+            ("Valor_actual_€", 0.0),
+            ("Peso_objetivo_%", 0.0),
+        ]:
+            if col not in df.columns:
+                df[col] = default
+
+        # Tipos: texto para identificadores, float para cantidades
+        df["Activo"] = df["Activo"].astype(str)
+        df["Tipo"] = df["Tipo"].astype(str)
+        df["ISIN"] = df["ISIN"].astype(str)
+
+        df["Valor_actual_€"] = pd.to_numeric(df["Valor_actual_€"], errors="coerce").fillna(0.0)
+        df["Peso_objetivo_%"] = pd.to_numeric(df["Peso_objetivo_%"], errors="coerce").fillna(0.0)
+
+        return df[["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]]
 
     # Inicializar cartera en sesión cargando de fichero si existe
     if "cartera_df" not in st.session_state:
         if os.path.exists(PORTFOLIO_FILE):
             try:
-                st.session_state["cartera_df"] = pd.read_json(PORTFOLIO_FILE)
+                loaded = pd.read_json(PORTFOLIO_FILE)
+                st.session_state["cartera_df"] = ensure_cartera_schema(loaded)
             except Exception:
                 st.session_state["cartera_df"] = default_data.copy()
         else:
             st.session_state["cartera_df"] = default_data.copy()
 
-    # Construimos la lista de opciones de activos para el selector de la tabla
-    opciones_activos = []
-    vistos = set()
-
-    def _add_nombre(n):
-        n = str(n).strip()
-        if n and n not in vistos:
-            vistos.add(n)
-            opciones_activos.append(n)
+    # --- Catálogo de activos para el selector (Nombre + ISIN) ---
+    catalog_rows = []
 
     # 1) Activos personalizados
     for a in custom_assets:
-        _add_nombre(a.get("nombre", ""))
+        catalog_rows.append(
+            {
+                "Nombre": str(a.get("nombre", "")).strip(),
+                "ISIN": str(a.get("isin", "")).strip().upper(),
+                "Tipo": str(a.get("tipo", "")).strip(),
+            }
+        )
 
-    # 2) Universo completo de Trade Republic (columna Name)
-    if not universo_df.empty and "Name" in universo_df.columns:
-        for n in universo_df["Name"].dropna().unique().tolist():
-            _add_nombre(n)
+    # 2) Universo completo de Trade Republic (CSV)
+    if not universo_df.empty:
+        for _, row_uni in universo_df.iterrows():
+            catalog_rows.append(
+                {
+                    "Nombre": str(row_uni.get("Name", "")).strip(),
+                    "ISIN": str(row_uni.get("ISIN", "")).strip().upper(),
+                    "Tipo": normalize_asset_type(row_uni.get("Type", "")),
+                }
+            )
 
-    # 3) Cualquier activo que ya esté en la cartera actual (para que nunca desaparezca del desplegable)
-    cartera_df_current = st.session_state["cartera_df"]
-    if "Activo" in cartera_df_current.columns:
-        for n in cartera_df_current["Activo"].dropna().tolist():
-            _add_nombre(n)
-
-    # Lista de ISINs disponibles para el selector (con buscador)
-    opciones_isin_set = set(
-        isin
-        for isin in asset_meta_by_isin.keys()
-        if isinstance(isin, str) and isin.strip()
-    )
-    if "ISIN" in cartera_df_current.columns:
-        for i in cartera_df_current["ISIN"].dropna().tolist():
-            s = str(i).strip().upper()
-            if s:
-                opciones_isin_set.add(s)
-    opciones_isin = sorted(opciones_isin_set)
+    catalog_df = pd.DataFrame(catalog_rows)
+    if not catalog_df.empty:
+        catalog_df = catalog_df[(catalog_df["Nombre"] != "") & (catalog_df["ISIN"] != "")]
+        catalog_df = catalog_df.drop_duplicates(subset="ISIN").reset_index(drop=True)
 
     st.subheader("📋 Activos de la cartera")
 
-    # Partimos de la cartera de sesión (sin columna 'Incluir')
-    source_df = st.session_state["cartera_df"].copy()
+    # --- Formulario para añadir/actualizar un activo en la cartera ---
+    st.markdown("#### Añadir o actualizar un activo")
 
-    columnas_orden = ["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]
-    for col in columnas_orden:
-        if col not in source_df.columns:
-            if col in ["Valor_actual_€", "Peso_objetivo_%"]:
-                source_df[col] = 0.0
+    # DataFrame actual de cartera (normalizado)
+    cartera_df_current = ensure_cartera_schema(st.session_state["cartera_df"])
+
+    if catalog_df.empty:
+        # Fallback manual si no hay catálogo con ISIN
+        st.info(
+            "No se ha podido cargar el universo de activos con ISIN. "
+            "Puedes añadir activos personalizados en el panel superior y luego seleccionarlos aquí."
+        )
+        nombre_manual = st.text_input("Nombre del activo")
+        isin_manual = st.text_input("ISIN")
+        tipo_manual = st.selectbox(
+            "Tipo de activo",
+            options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
+        )
+        selected_nombre = nombre_manual.strip()
+        selected_isin = isin_manual.strip().upper()
+        selected_tipo = tipo_manual
+    else:
+        # Selector por ISIN, mostrando Nombre (ISIN) para diferenciar activos con mismo nombre
+        isin_options = catalog_df["ISIN"].tolist()
+
+        def _format_isin(opt_isin: str) -> str:
+            fila = catalog_df[catalog_df["ISIN"] == opt_isin]
+            if fila.empty:
+                return opt_isin
+            nombre = fila["Nombre"].iloc[0]
+            return f"{nombre} ({opt_isin})"
+
+        selected_isin = st.selectbox(
+            "Busca y selecciona un activo (Nombre + ISIN)",
+            options=isin_options,
+            format_func=_format_isin,
+        )
+
+        fila_sel = catalog_df[catalog_df["ISIN"] == selected_isin].iloc[0]
+        selected_nombre = fila_sel["Nombre"]
+        selected_tipo = fila_sel["Tipo"] or ""
+
+        st.markdown(f"**Nombre:** {selected_nombre}")
+        st.markdown(f"**ISIN:** {selected_isin}")
+        st.markdown(f"**Tipo sugerido:** {selected_tipo or 'N/D'}")
+
+    col_valor, col_peso = st.columns(2)
+    with col_valor:
+        valor_sel = st.number_input(
+            "Valor actual en cartera (€)",
+            min_value=0.0,
+            step=50.0,
+            value=0.0,
+        )
+    with col_peso:
+        peso_sel = st.number_input(
+            "Peso objetivo (%) para este activo",
+            min_value=0.0,
+            step=1.0,
+            value=0.0,
+        )
+
+    if st.button("➕ Añadir / actualizar activo en la cartera"):
+        if not selected_nombre and not selected_isin:
+            st.error("Debes indicar al menos un nombre o un ISIN para el activo.")
+        else:
+            df_cart = cartera_df_current.copy()
+
+            nueva_fila = {
+                "Activo": selected_nombre,
+                "Tipo": selected_tipo,
+                "ISIN": selected_isin,
+                "Valor_actual_€": float(valor_sel),
+                "Peso_objetivo_%": float(peso_sel),
+            }
+
+            # Si hay ISIN, usamos ISIN como clave; si no, usamos nombre
+            if selected_isin:
+                mask = df_cart["ISIN"].astype(str).str.upper().eq(selected_isin)
             else:
-                source_df[col] = ""
-    source_df = source_df[columnas_orden]
+                mask = df_cart["Activo"].astype(str).str.strip().eq(selected_nombre)
 
-    # Aseguramos tipos de columna compatibles con data_editor:
-    # - Las columnas de Selectbox deben ser texto (object / string)
-    # - Las columnas numéricas deben ser float
-    for col in ["Activo", "Tipo", "ISIN"]:
-        if col in source_df.columns:
-            # Convertimos todo a string, evitando NaN raros
-            source_df[col] = source_df[col].astype(str)
+            if mask.any():
+                df_cart.loc[mask, :] = nueva_fila
+            else:
+                df_cart = pd.concat([df_cart, pd.DataFrame([nueva_fila])], ignore_index=True)
 
-    for col in ["Valor_actual_€", "Peso_objetivo_%"]:
-        if col in source_df.columns:
-            source_df[col] = pd.to_numeric(source_df[col], errors="coerce").astype(float)
+            st.session_state["cartera_df"] = ensure_cartera_schema(df_cart)
+            st.success("Activo añadido/actualizado en la cartera.")
 
-    # Forzamos un índice limpio estándar (0, 1, 2, ...) para evitar índices None/NaN
-    source_df = source_df.reset_index(drop=True)
+    # --- Tabla de cartera actual (solo lectura) ---
+    df_activos = ensure_cartera_schema(st.session_state["cartera_df"])
+    if df_activos.empty:
+        st.info("Todavía no has añadido activos a tu cartera.")
+    else:
+        st.markdown("#### Cartera actual")
+        st.dataframe(df_activos, use_container_width=True)
 
-    # Editor de cartera (los cambios se quedan en el estado interno del widget hasta pulsar el botón de actualizar)
-    df_activos = st.data_editor(
-        source_df,
-        num_rows="dynamic",
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "Activo": st.column_config.SelectboxColumn(
-                "Activo",
-                options=opciones_activos,
-                help="Selecciona el activo desde la base de datos/universo.",
-            ),
-            "Tipo": st.column_config.SelectboxColumn(
-                "Tipo",
-                options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
-                help="Se rellena automáticamente al seleccionar el activo si se conoce, pero puedes ajustarlo.",
-            ),
-            "ISIN": st.column_config.SelectboxColumn(
-                "ISIN",
-                options=opciones_isin,
-                help=(
-                    "Selecciona o busca un ISIN. Si el ISIN existe en la base de datos, "
-                    "se autocompletará el nombre del activo y su tipo."
+        # Opción para eliminar activos existentes
+        isins_en_cartera = df_activos["ISIN"].astype(str).str.strip().tolist()
+        if any(isins_en_cartera):
+            isins_unicos = sorted(set(i for i in isins_en_cartera if i))
+            isin_to_delete = st.multiselect(
+                "Selecciona activos para eliminar de la cartera",
+                options=isins_unicos,
+                format_func=lambda isin: (
+                    df_activos.loc[
+                        df_activos["ISIN"].astype(str).str.strip().eq(isin), "Activo"
+                    ].iloc[0]
+                    + f" ({isin})"
                 ),
-            ),
-            "Valor_actual_€": st.column_config.NumberColumn(
-                "Valor actual (€)",
-                min_value=0.0,
-                step=10.0,
-                default=0.0,
-            ),
-            "Peso_objetivo_%": st.column_config.NumberColumn(
-                "Peso objetivo (%)",
-                min_value=0.0,
-                step=1.0,
-                default=0.0,
-            ),
-        },
-        key="cartera_editor",
-    )
-
-    # Autocompletar Activo, Tipo e ISIN a partir de lo que haya en la fila
-    df_autocomplete = df_activos.copy()
-    if {"Activo", "ISIN"}.issubset(df_autocomplete.columns):
-        for idx, row in df_autocomplete.iterrows():
-            nombre = str(row.get("Activo", "")).strip()
-            isin = str(row.get("ISIN", "")).strip().upper()
-
-            meta = None
-
-            # Prioridad 1: si hay ISIN en la fila, usamos ese como referencia
-            if isin:
-                meta = asset_meta_by_isin.get(isin)
-
-            # Prioridad 2: si no se ha encontrado meta por ISIN, probamos por nombre
-            if not meta and nombre:
-                meta_name = asset_meta_by_name.get(nombre)
-                if meta_name:
-                    isin_meta = meta_name.get("isin", "")
-                    meta = {
-                        "nombre": nombre,
-                        "tipo": meta_name.get("tipo", ""),
-                        "isin": isin_meta,
-                    }
-
-            if meta:
-                # Aplicamos la meta a la fila: nombre, tipo e ISIN se sincronizan SIEMPRE
-                if meta.get("nombre"):
-                    df_autocomplete.at[idx, "Activo"] = meta["nombre"]
-                if meta.get("tipo"):
-                    df_autocomplete.at[idx, "Tipo"] = meta["tipo"]
-                if meta.get("isin"):
-                    df_autocomplete.at[idx, "ISIN"] = meta["isin"]
-
-        # Asignar 0 por defecto a Valor_actual_€ y Peso_objetivo_% cuando haya activo/ISIN pero no valores
-        for idx, row in df_autocomplete.iterrows():
-            nombre = str(row.get("Activo", "")).strip()
-            isin = str(row.get("ISIN", "")).strip()
-            if not nombre and not isin:
-                continue  # fila totalmente vacía
-
-            # Valor actual
-            val = row.get("Valor_actual_€")
-            if val is None or (isinstance(val, str) and not val.strip()):
-                df_autocomplete.at[idx, "Valor_actual_€"] = 0.0
-
-            # Peso objetivo
-            peso = row.get("Peso_objetivo_%")
-            if peso is None or (isinstance(peso, str) and not peso.strip()):
-                df_autocomplete.at[idx, "Peso_objetivo_%"] = 0.0
-
-    # Aseguramos que las columnas numéricas sean numéricas y sin NaN
-    if "Valor_actual_€" in df_autocomplete.columns:
-        df_autocomplete["Valor_actual_€"] = pd.to_numeric(
-            df_autocomplete["Valor_actual_€"], errors="coerce"
-        ).fillna(0.0)
-    if "Peso_objetivo_%" in df_autocomplete.columns:
-        df_autocomplete["Peso_objetivo_%"] = pd.to_numeric(
-            df_autocomplete["Peso_objetivo_%"], errors="coerce"
-        ).fillna(0.0)
-
-    df_activos = df_autocomplete
-
-    # Guardamos inmediatamente la versión autocompletada en sesión,
-    # de forma que cualquier cambio en la tabla se refleje en la cartera
-    st.session_state["cartera_df"] = df_activos.copy()
+            )
+            if isin_to_delete and st.button("🗑️ Eliminar seleccionados"):
+                mask_del = df_activos["ISIN"].astype(str).str.strip().isin(isin_to_delete)
+                df_activos = df_activos[~mask_del].reset_index(drop=True)
+                st.session_state["cartera_df"] = ensure_cartera_schema(df_activos)
+                st.success("Activos eliminados de la cartera.")
+                st.rerun()
 
     # Mostrar suma de pesos objetivo justo debajo de la tabla (solo filas con Activo no vacío)
     show_normalize_button = False
@@ -1027,39 +1035,48 @@ with tab1:
                 # Valor total tras aplicar únicamente la aportación (sin ventas)
                 total_despues_solo_compras = total_despues
 
-                # Holdings ideales si pudiésemos rebalancear completamente con compras + ventas
+                # Holdings ideales si rebalanceamos completamente (compras + ventas) a los pesos objetivo
                 ideal_holdings = {
                     a: targets[a] * total_despues_solo_compras for a in holdings.keys()
                 }
 
+                # Diferencias respecto a la situación tras la aportación:
+                # diff > 0  -> compra adicional necesaria
+                # diff < 0  -> venta necesaria
                 ventas = {}
+                compras = {}
                 for a in holdings.keys():
-                    valor_con_aporte = valores_despues[a]
-                    delta = ideal_holdings[a] - valor_con_aporte
-                    venta = 0.0
-                    if delta < 0:
-                        # Necesitamos vender para bajar hasta el nivel ideal
-                        venta = -delta
-                    # Guardamos la venta redondeada a euros sin decimales
-                    ventas[a] = int(round(venta))
+                    actual = valores_despues[a]
+                    ideal = ideal_holdings[a]
+                    diff = ideal - actual
+                    if diff < 0:
+                        ventas[a] = -diff
+                        compras[a] = 0.0
+                    elif diff > 0:
+                        ventas[a] = 0.0
+                        compras[a] = diff
+                    else:
+                        ventas[a] = 0.0
+                        compras[a] = 0.0
 
-                venta_total = sum(ventas.values())
+                venta_total = float(sum(ventas.values()))
+                compra_total = float(sum(compras.values()))
 
+                # Por construcción, si usamos ideal_holdings la suma de ventas y compras debería ser casi igual.
+                # Permitimos un pequeño desajuste numérico y redondeamos solo para mostrar.
                 if venta_total <= 1e-6:
                     st.info(
                         "En la práctica, las desviaciones son muy pequeñas y no merece la pena plantear ventas adicionales."
                     )
                 else:
-                    # Valores finales después de aplicar ventas
-                    valores_final = {
-                        a: valores_despues[a] - ventas[a] for a in holdings.keys()
-                    }
-                    total_final = total_despues_solo_compras - venta_total
+                    # Valores finales después de aplicar el rebalanceo completo
+                    valores_final = ideal_holdings.copy()
+                    total_final = total_despues_solo_compras
                     if total_final <= 0:
                         total_final = 1e-9
-                    pesos_final = {
-                        a: valores_final[a] / total_final for a in holdings.keys()
-                    }
+
+                    # Los pesos finales coinciden (por construcción) con los objetivos
+                    pesos_final = {a: targets[a] for a in holdings.keys()}
 
                     df_ventas = pd.DataFrame(
                         {
@@ -1071,13 +1088,14 @@ with tab1:
                             "Peso_despues_solo_compras_%": [pesos_despues[a] * 100 for a in holdings.keys()],
                             "Peso_objetivo_%": [targets[a] * 100 for a in holdings.keys()],
                             "Venta_necesaria_€": [ventas[a] for a in holdings.keys()],
+                            "Compra_extra_€": [compras[a] for a in holdings.keys()],
                             "Valor_final_post_venta_€": [valores_final[a] for a in holdings.keys()],
                             "Peso_final_%": [pesos_final[a] * 100 for a in holdings.keys()],
                         }
                     )
 
                     st.markdown(
-                        f"**Venta total mínima necesaria para alcanzar exactamente los pesos objetivo:** "
+                        f"**Venta total mínima necesaria para alcanzar exactamente los pesos objetivo (realizando también las compras necesarias):** "
                         f"≈ **{venta_total:,.0f} €**, repartida entre los activos sobreponderados."
                     )
 
@@ -1094,7 +1112,8 @@ with tab1:
 
                     st.caption(
                         "Las cantidades de venta se calculan como la **venta mínima necesaria** para dejar cada activo "
-                        "en su peso objetivo, partiendo de la situación tras aplicar solo la aportación del mes."
+                        "en su peso objetivo, partiendo de la situación tras aplicar solo la aportación del mes. "
+                        "Las compras adicionales se financian íntegramente con esas ventas (sin aportar más dinero nuevo)."
                     )
 
 
