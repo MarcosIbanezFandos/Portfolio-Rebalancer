@@ -652,9 +652,20 @@ with tab1:
                 source_df[col] = ""
     source_df = source_df[columnas_orden]
 
-    # Forzamos un índice limpio (1, 2, 3, ...) para evitar índices None/NaN
+    # Aseguramos tipos de columna compatibles con data_editor:
+    # - Las columnas de Selectbox deben ser texto (object / string)
+    # - Las columnas numéricas deben ser float
+    for col in ["Activo", "Tipo", "ISIN"]:
+        if col in source_df.columns:
+            # Convertimos todo a string, evitando NaN raros
+            source_df[col] = source_df[col].astype(str)
+
+    for col in ["Valor_actual_€", "Peso_objetivo_%"]:
+        if col in source_df.columns:
+            source_df[col] = pd.to_numeric(source_df[col], errors="coerce").astype(float)
+
+    # Forzamos un índice limpio estándar (0, 1, 2, ...) para evitar índices None/NaN
     source_df = source_df.reset_index(drop=True)
-    source_df.index = source_df.index + 1
 
     # Editor de cartera (los cambios se quedan en el estado interno del widget hasta pulsar el botón de actualizar)
     df_activos = st.data_editor(
