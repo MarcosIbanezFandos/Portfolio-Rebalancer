@@ -1,13 +1,13 @@
 {
   "vivienda": {
-    "Plan_piso_Valencia_2032": {
+    "Plan_ejemplo_piso_2033": {
       "house_price": 260000.0,
       "entrada_pct": 20.0,
       "years_house": 7,
       "ahorro_actual_entrada": 15000.0,
       "anual_return_house_input": 4.0
     },
-    "Plan_estudio_Madrid_2029": {
+    "Plan_ejemplo_2030": {
       "house_price": 180000.0,
       "entrada_pct": 25.0,
       "years_house": 4,

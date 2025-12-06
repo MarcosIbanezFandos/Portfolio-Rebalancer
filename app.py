@@ -1784,7 +1784,7 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
     col_plan_lp_1, col_plan_lp_2 = st.columns([2, 2])
     with col_plan_lp_1:
         nombre_plan_lp = st.text_input(
-            "Nombre para guardar este plan (ej. 'Plan Indexa/ETF largo plazo')",
+            "Nombre para guardar este plan",
             value="",
         )
     with col_plan_lp_2:
