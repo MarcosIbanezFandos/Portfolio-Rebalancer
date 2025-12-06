@@ -426,7 +426,7 @@ def load_universe_csv():
 
 
 st.set_page_config(
-    page_title="Planificador de cartera - Marcos",
+    page_title="Planificador de cartera",
     page_icon="💶",
     layout="wide",
 )
@@ -438,7 +438,7 @@ st.markdown(
     """
 Esta aplicación te permite gestionar de forma avanzada tu planificación financiera:
 
-- **Rebalanceo mensual**: reparte tu aportación del mes entre activos para mantener tus pesos objetivo, guardando/cargando carteras y visualizando cómo cambian tus porcentajes antes y después de invertir.  
+- **Rebalanceo de activos**: reparte tu aportación periódica entre activos para mantener tus pesos objetivo, guardando/cargando carteras y visualizando cómo cambian tus porcentajes antes y después de invertir.  
 - **Objetivo a largo plazo**: calcula cuánto deberías aportar (de forma constante o creciente) para alcanzar un patrimonio deseado en X años, con opción de contemplar impuestos, evolución anual, sueldo necesario y gráficos.  
 - **Plan de vivienda**: planifica la entrada de un piso incluyendo gastos, rentabilidad, aportaciones constantes o crecientes, impuestos, y simulación de hipoteca.
 
@@ -448,7 +448,7 @@ Usa las pestañas de abajo para navegar por cada módulo.
 
 tab1, tab2, tab3, tab4 = st.tabs(
     [
-        "🔁 Rebalanceo mensual",
+        "🔁 Rebalanceo de activos",
         "🎯 Objetivo a largo plazo",
         "🏠 Plan de vivienda",
         "📊 Análisis de cartera",
@@ -460,7 +460,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 # TAB 1: REBALANCEO MENSUAL
 # ============================
 with tab1:
-    st.header("Rebalanceo con nueva aportación mensual")
+    st.header("Asignación mensual y rebalanceo de activos")
 
     st.markdown(
         "1. Rellena la tabla con tus activos, tipo, valor actual y porcentaje objetivo.\n"
