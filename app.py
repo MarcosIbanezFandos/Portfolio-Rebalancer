@@ -468,8 +468,7 @@ with tab1:
         "3. Pulsa el botón para ver cómo repartir el dinero."
     )
 
-    # Cargamos listado maestro de activos: universo completo + personalizados
-    universo_df = load_universe_csv()
+    # Cargamos solo los activos personalizados del usuario
     custom_assets = load_custom_assets()
 
     # --- Normalización de tipos de activo del CSV ---
@@ -491,6 +490,31 @@ with tab1:
         if any(x in s for x in ["fund", "sicav", "fond"]):
             return "Fondo"
         return "Otro"
+
+    @st.cache_data
+    def build_universe_catalog() -> pd.DataFrame:
+        """
+        Construye un catálogo de universo (Nombre, ISIN, Tipo) a partir del CSV completo.
+
+        Se ejecuta una sola vez gracias a la caché; en los siguientes reruns, el resultado
+        se reutiliza directamente, evitando recomputar transformaciones caras sobre todo el CSV.
+        """
+        df = load_universe_csv()
+        if df.empty:
+            return pd.DataFrame(columns=["Nombre", "ISIN", "Tipo"])
+
+        universe_small = df[["Name", "ISIN", "Type"]].copy()
+        universe_small["Nombre"] = universe_small["Name"].astype(str).str.strip()
+        universe_small["ISIN"] = universe_small["ISIN"].astype(str).str.strip().str.upper()
+        universe_small["Tipo"] = universe_small["Type"].apply(normalize_asset_type)
+        universe_small = universe_small[["Nombre", "ISIN", "Tipo"]]
+
+        # Limpiamos filas sin nombre o sin ISIN y eliminamos duplicados por ISIN
+        universe_small = universe_small[
+            (universe_small["Nombre"] != "") & (universe_small["ISIN"] != "")
+        ]
+        universe_small = universe_small.drop_duplicates(subset="ISIN").reset_index(drop=True)
+        return universe_small
 
     # UI para crear activos personalizados locales
     with st.expander("➕ Añadir activo personalizado a tu lista"):
@@ -577,7 +601,7 @@ with tab1:
             st.session_state["cartera_df"] = default_data.copy()
 
     # --- Catálogo de activos para el selector (Nombre + ISIN) ---
-    # Construimos un DataFrame vectorizado (mucho más rápido que iterar fila a fila)
+    # DataFrame con los activos personalizados (normalmente pocos)
     custom_rows = [
         {
             "Nombre": str(a.get("nombre", "")).strip(),
@@ -591,12 +615,10 @@ with tab1:
     else:
         custom_catalog_df = pd.DataFrame(columns=["Nombre", "ISIN", "Tipo"])
 
-    if not universo_df.empty:
-        universe_small = universo_df[["Name", "ISIN", "Type"]].copy()
-        universe_small["Nombre"] = universe_small["Name"].astype(str).str.strip()
-        universe_small["ISIN"] = universe_small["ISIN"].astype(str).str.strip().str.upper()
-        universe_small["Tipo"] = universe_small["Type"].apply(normalize_asset_type)
-        universe_small = universe_small[["Nombre", "ISIN", "Tipo"]]
+    # Catálogo del universo grande, preprocesado y cacheado
+    universe_small = build_universe_catalog()
+
+    if not universe_small.empty:
         catalog_df = pd.concat([custom_catalog_df, universe_small], ignore_index=True)
     else:
         catalog_df = custom_catalog_df.copy()
@@ -629,29 +651,37 @@ with tab1:
         selected_isin = isin_manual.strip().upper()
         selected_tipo = tipo_manual
     else:
-        # Selector por ISIN, mostrando Nombre (ISIN) para diferenciar activos con mismo nombre
-        isin_options = catalog_df["ISIN"].tolist()
+        # Selector por ISIN, mostrando Nombre (ISIN) para diferenciar activos con mismo nombre.
+        # Para que sea eficiente, precomputamos una etiqueta por fila y la usamos directamente,
+        # evitando aplicar un format_func costoso sobre miles de opciones en cada rerun.
+        catalog_for_select = catalog_df.copy()
+        catalog_for_select["Label"] = catalog_for_select["Nombre"] + " (" + catalog_for_select["ISIN"] + ")"
 
-        def _format_isin(opt_isin: str) -> str:
-            fila = catalog_df[catalog_df["ISIN"] == opt_isin]
-            if fila.empty:
-                return opt_isin
-            nombre = fila["Nombre"].iloc[0]
-            return f"{nombre} ({opt_isin})"
+        placeholder_label = ""
+        label_options = [placeholder_label] + catalog_for_select["Label"].tolist()
 
-        selected_isin = st.selectbox(
-            "Busca y selecciona un activo (Nombre + ISIN)",
-            options=isin_options,
-            format_func=_format_isin,
+        # Si en el run anterior hemos indicado que hay que resetear el selector,
+        # lo hacemos AHORA, antes de instanciar el widget.
+        if st.session_state.get("reset_selector_activo", False):
+            st.session_state["selector_activo_label"] = placeholder_label
+            st.session_state["reset_selector_activo"] = False
+
+        selected_label = st.selectbox(
+            "Busca y selecciona un activo",
+            options=label_options,
+            key="selector_activo_label",
         )
 
-        fila_sel = catalog_df[catalog_df["ISIN"] == selected_isin].iloc[0]
-        selected_nombre = fila_sel["Nombre"]
-        selected_tipo = fila_sel["Tipo"] or ""
-
-        st.markdown(f"**Nombre:** {selected_nombre}")
-        st.markdown(f"**ISIN:** {selected_isin}")
-        st.markdown(f"**Tipo sugerido:** {selected_tipo or 'N/D'}")
+        if selected_label == placeholder_label:
+            selected_isin = ""
+            selected_nombre = ""
+            selected_tipo = ""
+        else:
+            # Localizamos la fila seleccionada por etiqueta (solo una búsqueda por rerun)
+            fila_sel = catalog_for_select[catalog_for_select["Label"] == selected_label].iloc[0]
+            selected_isin = fila_sel["ISIN"]
+            selected_nombre = fila_sel["Nombre"]
+            selected_tipo = fila_sel["Tipo"] or ""
 
     col_valor, col_peso = st.columns(2)
     with col_valor:
@@ -689,13 +719,24 @@ with tab1:
             else:
                 mask = df_cart["Activo"].astype(str).str.strip().eq(selected_nombre)
 
+            # Si ya existe, ACTUALIZAMOS solo la primera coincidencia
             if mask.any():
-                df_cart.loc[mask, :] = nueva_fila
+                idx_matches = df_cart.index[mask]
+                first_idx = idx_matches[0]
+
+                # Aseguramos que las columnas existen y actualizamos solo esas
+                for col, val in nueva_fila.items():
+                    if col in df_cart.columns:
+                        df_cart.at[first_idx, col] = val
             else:
+                # Si no existe, añadimos una nueva fila
                 df_cart = pd.concat([df_cart, pd.DataFrame([nueva_fila])], ignore_index=True)
 
             st.session_state["cartera_df"] = ensure_cartera_schema(df_cart)
             st.success("Activo añadido/actualizado en la cartera.")
+            # Marcamos que en el próximo run hay que resetear el selector de activo
+            st.session_state["reset_selector_activo"] = True
+            st.rerun()
 
     # --- Tabla de cartera actual (solo lectura) ---
     df_activos = ensure_cartera_schema(st.session_state["cartera_df"])
@@ -703,7 +744,13 @@ with tab1:
         st.info("Todavía no has añadido activos a tu cartera.")
     else:
         st.markdown("#### Cartera actual")
-        st.dataframe(df_activos, use_container_width=True)
+        df_activos_show = df_activos.copy()
+        # Redondeamos importes en € y porcentajes a como máximo 2 decimales
+        if "Valor_actual_€" in df_activos_show.columns:
+            df_activos_show["Valor_actual_€"] = df_activos_show["Valor_actual_€"].round(2)
+        if "Peso_objetivo_%" in df_activos_show.columns:
+            df_activos_show["Peso_objetivo_%"] = df_activos_show["Peso_objetivo_%"].round(2)
+        st.dataframe(df_activos_show, use_container_width=True)
 
         # Opción para eliminar activos existentes
         isins_en_cartera = df_activos["ISIN"].astype(str).str.strip().tolist()
@@ -750,9 +797,8 @@ with tab1:
             suma = df_norm.loc[mask_valid, "Peso_objetivo_%"].sum()
 
             if suma > 0:
-                df_norm.loc[mask_valid, "Peso_objetivo_%"] = (
-                    df_norm.loc[mask_valid, "Peso_objetivo_%"] / suma * 100.0
-                )
+                serie_norm = df_norm.loc[mask_valid, "Peso_objetivo_%"] / suma * 100.0
+                df_norm.loc[mask_valid, "Peso_objetivo_%"] = serie_norm.round(2)
                 st.session_state["cartera_df"] = df_norm
                 st.success("Pesos normalizados correctamente al 100% sobre las filas con activo.")
                 st.rerun()
@@ -801,39 +847,83 @@ with tab1:
             else:
                 text_color = text_color or "#000000"
 
-            fig, ax = plt.subplots()
-            fig.patch.set_facecolor("none")
-            ax.set_facecolor("none")
+            col_pie, col_bar = st.columns(2)
 
-            wedges, texts, autotexts = ax.pie(
-                pesos_actuales,
-                labels=labels,
-                autopct="%1.1f%%",
-                startangle=90,
-                colors=colors,
-            )
-            ax.axis("equal")
+            # Pie chart más pequeño a la izquierda
+            with col_pie:
+                st.markdown("#### Distribución actual de la cartera (por valor de mercado)")
 
-            for t in texts + autotexts:
-                t.set_color(text_color)
+                fig, ax = plt.subplots(figsize=(4, 4))
+                fig.patch.set_facecolor("none")
+                ax.set_facecolor("none")
 
-            st.markdown("#### Distribución actual de la cartera (por valor de mercado)")
-            st.pyplot(fig)
+                wedges, texts, autotexts = ax.pie(
+                    pesos_actuales,
+                    labels=labels,
+                    autopct="%1.1f%%",
+                    startangle=90,
+                    colors=colors,
+                )
+                ax.axis("equal")
 
-            unique_tipos = []
-            unique_colors = []
-            for t, c in zip(tipos, colors):
-                if t not in unique_tipos:
-                    unique_tipos.append(t)
-                    unique_colors.append(c)
+                for t in texts + autotexts:
+                    t.set_color(text_color)
 
-            if unique_tipos:
-                legend_lines = []
-                for t, c in zip(unique_tipos, unique_colors):
-                    legend_lines.append(
-                        f"<span style='font-size:0.85em;'><span style='color:{c}'>■</span> {t}</span>"
-                    )
-                st.markdown("<br/>".join(legend_lines), unsafe_allow_html=True)
+                st.pyplot(fig)
+
+                unique_tipos = []
+                unique_colors = []
+                for t, c in zip(tipos, colors):
+                    if t not in unique_tipos:
+                        unique_tipos.append(t)
+                        unique_colors.append(c)
+
+                if unique_tipos:
+                    legend_lines = []
+                    for t, c in zip(unique_tipos, unique_colors):
+                        legend_lines.append(
+                            f"<span style='font-size:0.85em;'><span style='color:{c}'>■</span> {t}</span>"
+                        )
+                    st.markdown("<br/>".join(legend_lines), unsafe_allow_html=True)
+
+            # Bar chart con valor actual de cada activo a la derecha
+            with col_bar:
+                st.markdown("#### Valor actual por activo")
+
+                df_sorted = df_activos.sort_values("Valor_actual_€", ascending=False).copy()
+                nombres = df_sorted["Activo"].tolist()
+                valores = df_sorted["Valor_actual_€"].tolist()
+                tipos_sorted = df_sorted["Tipo"].tolist()
+                x_pos = list(range(len(nombres)))
+
+                # Colores por tipo de activo (mismos que en el pie chart)
+                bar_colors = [type_colors.get(t, "#7f7f7f") for t in tipos_sorted]
+
+                # Gráfico más compacto para equilibrar con el pie chart
+                fig_bar, ax_bar = plt.subplots(figsize=(2, 2))
+                fig_bar.patch.set_facecolor("none")
+                ax_bar.set_facecolor("none")
+
+                bars = ax_bar.bar(x_pos, valores, color=bar_colors)
+                ax_bar.set_xticks(x_pos)
+                ax_bar.set_xticklabels(nombres, rotation=35, ha="right", fontsize=5)
+                ax_bar.set_ylabel("Valor actual (€)", fontsize=3.5)
+
+                # Adaptamos colores de texto y ejes al tema actual (oscuro / claro)
+                ax_bar.tick_params(axis="x", colors=text_color, labelsize=3.5)
+                ax_bar.tick_params(axis="y", colors=text_color, labelsize=3.5)
+                ax_bar.yaxis.label.set_color(text_color)
+                for spine in ax_bar.spines.values():
+                    spine.set_color(text_color)
+
+                # Borde de las barras adaptado al tema, manteniendo el color de relleno por tipo
+                for bar in bars:
+                    bar.set_edgecolor(text_color)
+
+                fig_bar.tight_layout()
+
+                st.pyplot(fig_bar)
+
     else:
         st.info("Añade activos a la tabla y asigna un valor actual para ver el gráfico de distribución.")
 
@@ -901,6 +991,57 @@ with tab1:
                 rebalance_threshold=rebalance_threshold,
             )
 
+            # Convertimos el plan a importes ENTEROS en euros que sumen exactamente la aportación mensual
+            C = float(monthly_contribution)
+            plan_raw = {a: max(0.0, float(v)) for a, v in plan.items()}
+            total_raw = sum(plan_raw.values())
+
+            if C <= 0 or not plan_raw:
+                plan_int = {a: 0 for a in plan_raw}
+            else:
+                if total_raw > 0:
+                    # Proporcional al plan original, ajustado a que la suma sea C
+                    alloc_float = {a: (plan_raw[a] / total_raw) * C for a in plan_raw}
+                else:
+                    # Si por alguna razón el plan original suma 0, repartimos C a partes iguales
+                    n = len(plan_raw)
+                    alloc_float = {a: C / n for a in plan_raw} if n > 0 else {}
+
+                # Pasamos a enteros asegurando que la suma sea exactamente C
+                floors = {a: int(alloc_float[a]) for a in alloc_float}
+                sum_floor = sum(floors.values())
+                diff = int(round(C - sum_floor))
+
+                if diff > 0:
+                    # Repartimos euros extra empezando por los mayores decimales
+                    remainders = sorted(
+                        [(a, alloc_float[a] - floors[a]) for a in alloc_float],
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                    for i in range(min(diff, len(remainders))):
+                        a = remainders[i][0]
+                        floors[a] += 1
+                elif diff < 0:
+                    # Quitamos euros empezando por los menores decimales
+                    remainders = sorted(
+                        [(a, alloc_float[a] - floors[a]) for a in alloc_float],
+                        key=lambda x: x[1],
+                    )
+                    to_remove = min(-diff, len(remainders))
+                    i = 0
+                    while to_remove > 0 and i < len(remainders):
+                        a = remainders[i][0]
+                        if floors[a] > 0:
+                            floors[a] -= 1
+                            to_remove -= 1
+                        i += 1
+
+                plan_int = floors
+
+            # A partir de aquí, usamos el plan entero en todos los cálculos y tablas
+            plan = plan_int
+
             st.subheader("✅ Plan de aportación sugerido (actualizado en tiempo real)")
 
             df_plan = pd.DataFrame(
@@ -909,6 +1050,9 @@ with tab1:
                     "Aportación_mes_€": list(plan.values()),
                 }
             )
+
+            # Mostrar las aportaciones mensuales como enteros (sin decimales)
+            df_plan["Aportación_mes_€"] = df_plan["Aportación_mes_€"].astype(int)
 
             st.dataframe(df_plan)
             st.markdown(
@@ -946,6 +1090,14 @@ with tab1:
                     "Peso_objetivo_%": [targets[a] * 100 for a in holdings.keys()],
                 }
             )
+
+            # Redondeamos porcentajes a dos decimales
+            for col_pct in ["Peso_antes_%", "Peso_despues_%", "Peso_objetivo_%"]:
+                df_pesos[col_pct] = df_pesos[col_pct].round(2)
+            # Cantidades en €: máximo 2 decimales, salvo la aportación mensual que será entero
+            for col_eur in ["Valor_antes_€", "Valor_despues_€"]:
+                df_pesos[col_eur] = df_pesos[col_eur].round(2)
+            df_pesos["Aportación_mes_€"] = df_pesos["Aportación_mes_€"].astype(int)
 
             st.dataframe(df_pesos)
 
@@ -1038,6 +1190,22 @@ with tab1:
                         }
                     )
 
+                    # Formateo: porcentajes con 2 decimales
+                    for col_pct in ["Peso_despues_solo_compras_%", "Peso_objetivo_%", "Peso_final_%"]:
+                        df_ventas[col_pct] = df_ventas[col_pct].round(2)
+
+                    # Cantidades en €: máximo 2 decimales, salvo aportación mensual y ventas necesarias que serán enteros
+                    for col_eur in [
+                        "Valor_antes_€",
+                        "Valor_despues_solo_compras_€",
+                        "Compra_extra_€",
+                        "Valor_final_post_venta_€",
+                    ]:
+                        df_ventas[col_eur] = df_ventas[col_eur].round(2)
+
+                    df_ventas["Aportación_mes_€"] = df_ventas["Aportación_mes_€"].astype(int)
+                    df_ventas["Venta_necesaria_€"] = df_ventas["Venta_necesaria_€"].astype(int)
+
                     st.markdown(
                         f"**Venta total mínima necesaria para alcanzar exactamente los pesos objetivo (realizando también las compras necesarias):** "
                         f"≈ **{venta_total:,.0f} €**, repartida entre los activos sobreponderados."
@@ -1052,6 +1220,11 @@ with tab1:
                         "Peso_final_%",
                         "Peso_objetivo_%",
                     ]].copy()
+                    # Aseguramos también 2 decimales en porcentajes del resumen
+                    for col_pct in ["Peso_despues_solo_compras_%", "Peso_final_%", "Peso_objetivo_%"]:
+                        df_resumen_ventas[col_pct] = df_resumen_ventas[col_pct].round(2)
+                    # Ventas necesarias como enteros (sin decimales)
+                    df_resumen_ventas["Venta_necesaria_€"] = df_resumen_ventas["Venta_necesaria_€"].astype(int)
                     st.dataframe(df_resumen_ventas)
 
                     st.caption(
