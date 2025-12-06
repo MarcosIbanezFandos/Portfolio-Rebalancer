@@ -94,18 +94,32 @@ CURRENCY_RE = re.compile(
 
 # --- 2. FUNCIONES DE ANÁLISIS ---
 
-def infer_region_info(isin: str):
-    """Obtiene País y Macro-Región desde el ISIN."""
+def infer_region_info(isin: str, asset_type: str | None = None):
+    """
+    Obtiene País y Macro-Región desde el ISIN.
+
+    - Para acciones (asset_type == "Stock" o None): se intenta mapear el código
+      de país del ISIN a una macro-región usando REGION_GROUPS (como antes).
+    - Para ETFs (asset_type == "ETF"): NO inferimos la región a partir del ISIN,
+      porque muchos ETFs europeos (ej. ISIN irlandés) invierten en otras zonas
+      del mundo. En ese caso devolvemos la región vacía ("").
+    """
     if len(isin) < 2:
-        return "XX", "Unknown", "Unknown"
+        return "XX", "Unknown", ""
+
     code = isin[:2]
     country_name = COUNTRY_MAP.get(code, f"Other ({code})")
-    
-    macro = "Other"
-    for region_name, codes in REGION_GROUPS.items():
-        if code in codes:
-            macro = region_name
-            break
+
+    # Para ETFs no inferimos región desde el ISIN
+    if asset_type == "ETF":
+        macro = ""
+    else:
+        macro = ""
+        for region_name, codes in REGION_GROUPS.items():
+            if code in codes:
+                macro = region_name
+                break
+
     return code, country_name, macro
 
 def clean_name(name: str) -> str:
@@ -286,7 +300,7 @@ def main():
                         asset_type = "ETF"
 
                     # --- ANÁLISIS DE DATOS ---
-                    code, country, region = infer_region_info(isin)
+                    code, country, region = infer_region_info(isin, asset_type)
                     
                     provider = None
                     is_adr = False
