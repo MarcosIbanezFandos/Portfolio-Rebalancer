@@ -321,7 +321,13 @@ def main():
                     etf_subtype = classify_etf_subtype(name) if asset_type == "ETF" else None
 
                     # Clave de búsqueda simplificada (minúsculas, sin espacios dobles)
-                    search_key = re.sub(r"\s+", " ", name).strip().lower()
+                    base_key = re.sub(r"\s+", " ", name).strip().lower()
+                    # Versión alternativa: eliminamos '&' solo cuando está entre letras (p.ej. 's&p' -> 'sp')
+                    alt_key = re.sub(r"(?<=[a-zA-Z])&(?=[a-zA-Z])", "", base_key)
+                    if alt_key != base_key:
+                        search_key = f"{base_key} {alt_key}"
+                    else:
+                        search_key = base_key
                     # Guardar registro
                     data_rows.append({
                         "ISIN": isin,
