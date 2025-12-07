@@ -1,61 +1,86 @@
-def compute_progressive_tax(gain):
-    tax = 0
+import os
+import json
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
+
+
+# ==============================
+# Tax & salary helper functions
+# ==============================
+
+def compute_progressive_tax(gain: float) -> float:
+    """
+    Compute Spanish capital gains tax using progressive brackets.
+
+    Parameters
+    ----------
+    gain : float
+        Total capital gain to be taxed.
+
+    Returns
+    -------
+    float
+        Total tax due on the gain.
+    """
     if gain <= 0:
-        return 0
-    brackets = [
-        (6000, 0.19),
-        (44000, 0.21),
-        (150000, 0.23),
-        (float("inf"), 0.26),
-    ]
+        return 0.0
+
     remaining = gain
-    limits = [6000, 50000, 200000]
-    prev = 0
-    for limit, rate in zip(limits, [0.19, 0.21, 0.23]):
+    tax = 0.0
+
+    # Brackets (approximate, combined state + regional)
+    limits = [6000, 50000, 200000]  # cumulative
+    rates = [0.19, 0.21, 0.23]
+    prev = 0.0
+
+    for limit, rate in zip(limits, rates):
         if remaining <= 0:
             break
         taxable = min(remaining, limit - prev)
-        tax += taxable * rate
-        remaining -= taxable
-        prev = limit
+        if taxable > 0:
+            tax += taxable * rate
+            remaining -= taxable
+            prev = limit
+
+    # Final bracket
     if remaining > 0:
         tax += remaining * 0.26
+
     return tax
 
-# === Helper: Cálculo neto desde bruto anual en España (aprox) ===
+
 def compute_salary_net(gross_annual: float):
     """
-    Cálculo aproximado de sueldo NETO a partir de BRUTO anual en España.
+    Very rough approximation of NET salary from gross annual salary in Spain.
 
-    - Aplica una cotización de Seguridad Social del trabajador ~6.35% sobre el bruto,
-      con un tope de base anual aproximado (por encima de esa base la cuota ya no aumenta).
-    - Sobre la base después de SS aplica tramos de IRPF aproximados (tipo combinado estatal + autonómico).
-    - NO tiene en cuenta mínimos personales/familiares ni deducciones específicas,
-      así que es una estimación orientativa, no una simulación fiscal exacta.
+    - Applies ~6.35% Social Security contribution up to a capped base.
+    - Applies approximate progressive IRPF rates on the remaining base.
+    - Does NOT take into account personal / family allowances or specific deductions.
+
+    Returns
+    -------
+    net_annual : float
+    ss_contrib : float
+    irpf : float
+    effective_total_rate : float
+        Total effective tax+SS rate (0–1).
     """
     if gross_annual <= 0:
         return 0.0, 0.0, 0.0, 0.0
 
-    # 1) Seguridad Social trabajador (~6.35% del bruto) con tope de base
+    # 1) Employee's Social Security (~6.35% up to a max base)
     ss_rate = 0.0635
+    SS_MAX_ANNUAL_BASE = 60000.0  # rough approximation
 
-    # Aproximación de base máxima anual de cotización:
-    # por encima de esta cantidad, no aumentan las cotizaciones del trabajador.
-    SS_MAX_BASE_ANUAL = 60000.0  # aprox; valor orientativo
-
-    ss_base = min(gross_annual, SS_MAX_BASE_ANUAL)
+    ss_base = min(gross_annual, SS_MAX_ANNUAL_BASE)
     ss_contrib = ss_base * ss_rate
 
-    # Base para IRPF (simplificada: bruto - SS)
+    # 2) IRPF base (simplified: gross - SS)
     base_irpf = max(0.0, gross_annual - ss_contrib)
 
-    # 2) Tramos IRPF aproximados (ejemplo genérico España, puede variar por CCAA)
-    #    0–12.450€: 19%
-    #    12.450–20.200€: 24%
-    #    20.200–35.200€: 30%
-    #    35.200–60.000€: 37%
-    #    60.000–300.000€: 45%
-    #    >300.000€: 47%
+    # Approx progressive IRPF brackets (can vary by region)
     limits = [12450, 20200, 35200, 60000, 300000]
     rates = [0.19, 0.24, 0.30, 0.37, 0.45]
     remaining = base_irpf
@@ -71,45 +96,53 @@ def compute_salary_net(gross_annual: float):
             remaining -= tramo
             prev = limit
 
-    # Tramo final > 300.000€
     if remaining > 0:
-        irpf += remaining * 0.47
+        irpf += remaining * 0.47  # > 300k
 
     net_annual = gross_annual - ss_contrib - irpf
-    if gross_annual > 0:
-        effective_total_rate = 1.0 - (net_annual / gross_annual)
-    else:
-        effective_total_rate = 0.0
+    effective_total_rate = 1.0 - (net_annual / gross_annual) if gross_annual > 0 else 0.0
 
     return net_annual, ss_contrib, irpf, effective_total_rate
 
-# === JSON helpers for cartera/planes ===
-import os
-import json
 
-PORTFOLIO_FILE = "cartera.json"
-PLANS_FILE = "planes.json"
-PORTFOLIOS_FILE = "carteras.json"
-CUSTOM_ASSETS_FILE = "activos_custom.json"
+# ==============================
+# JSON helpers for plans & portfolios
+# ==============================
 
-def load_plans():
+PORTFOLIO_FILE = "cartera.json"       # single unnamed portfolio (backwards compatibility)
+PLANS_FILE = "planes.json"            # long-term goal plans, housing plans, etc.
+PORTFOLIOS_FILE = "carteras.json"     # named portfolios
+CUSTOM_ASSETS_FILE = "activos_custom.json"  # user-defined assets
+
+
+def load_plans() -> dict:
+    """Load all saved plans from PLANS_FILE."""
     if os.path.exists(PLANS_FILE):
         try:
             with open(PLANS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
         except Exception:
             return {}
     return {}
 
 
 def save_plans(plans: dict) -> None:
+    """Persist all plans to PLANS_FILE as JSON."""
     with open(PLANS_FILE, "w", encoding="utf-8") as f:
         json.dump(plans, f, ensure_ascii=False, indent=2)
 
 
-# === Helpers para carteras nombradas ===
-def load_portfolios():
-    """Carga el diccionario de carteras nombradas desde 'carteras.json'."""
+def load_portfolios() -> dict:
+    """
+    Load named portfolios from PORTFOLIOS_FILE.
+
+    Returns
+    -------
+    dict
+        Mapping portfolio_name -> list of rows (dicts) representing the portfolio.
+    """
     if os.path.exists(PORTFOLIOS_FILE):
         try:
             with open(PORTFOLIOS_FILE, "r", encoding="utf-8") as f:
@@ -122,17 +155,19 @@ def load_portfolios():
 
 
 def save_portfolios(portfolios: dict) -> None:
-    """Guarda el diccionario de carteras nombradas en 'carteras.json'."""
+    """Save named portfolios to PORTFOLIOS_FILE."""
     with open(PORTFOLIOS_FILE, "w", encoding="utf-8") as f:
         json.dump(portfolios, f, ensure_ascii=False, indent=2)
 
 
-# === Helpers para activos personalizados del usuario ===
-def load_custom_assets():
-    """Carga activos personalizados del usuario desde un JSON local.
+def load_custom_assets() -> list:
+    """
+    Load user-defined custom assets from CUSTOM_ASSETS_FILE.
 
-    El fichero debe llamarse 'activos_custom.json' y contener una lista de objetos
-    con, al menos, la clave 'nombre' (y opcionalmente 'tipo', 'ticker', 'isin').
+    The file should contain a JSON list of objects with at least:
+    - 'nombre'
+    and optionally:
+    - 'tipo', 'ticker', 'isin'
     """
     if os.path.exists(CUSTOM_ASSETS_FILE):
         try:
@@ -146,34 +181,53 @@ def load_custom_assets():
 
 
 def save_custom_assets(custom_assets: list) -> None:
-    """Guarda la lista de activos personalizados del usuario en 'activos_custom.json'."""
+    """Save user-defined custom assets to CUSTOM_ASSETS_FILE."""
     with open(CUSTOM_ASSETS_FILE, "w", encoding="utf-8") as f:
         json.dump(custom_assets, f, ensure_ascii=False, indent=2)
 
 
+# ==============================
+# Portfolio model & rebalancing logic
+# ==============================
 
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-
-# === Lógica financiera y de rebalanceo (antes en rebalance_marcos.py) ===
 class Portfolio:
-    def __init__(self, holdings: dict, targets: dict, asset_types: dict | None = None):
+    """
+    Simple portfolio representation used for rebalancing logic.
+    """
+
+    def __init__(
+        self,
+        holdings: dict,
+        targets: dict,
+        asset_types: dict | None = None,
+    ):
         """
-        holdings: diccionario {activo: valor_actual_€}
-        targets:  diccionario {activo: peso_objetivo (0–1), sumando ~1}
-        asset_types: diccionario opcional {activo: tipo}
+        Parameters
+        ----------
+        holdings : dict
+            Mapping {asset_name: current_value_in_eur}.
+        targets : dict
+            Mapping {asset_name: target_weight (0–1)}. Should sum to ~1.
+        asset_types : dict, optional
+            Mapping {asset_name: type}, only used for display.
         """
         self.holdings = dict(holdings)
         self.targets = dict(targets)
         self.asset_types = dict(asset_types or {})
 
     def total_value(self) -> float:
-        """Valor total actual de la cartera."""
+        """Total current market value of the portfolio."""
         return float(sum(self.holdings.values()))
 
     def current_weights(self) -> dict:
-        """Pesos actuales (0–1) de cada activo en la cartera."""
+        """
+        Current weights (0–1) of each asset.
+
+        Returns
+        -------
+        dict
+            Mapping {asset_name: weight}.
+        """
         total = self.total_value()
         if total <= 0:
             return {a: 0.0 for a in self.holdings}
@@ -186,13 +240,22 @@ def compute_contribution_plan(
     rebalance_threshold: float = 0.0,
 ) -> dict:
     """
-    Reparte la aportación mensual entre los activos de forma que:
-    - Se intente acercar cada activo a su peso objetivo tras la aportación.
-    - Nunca se venden activos (solo compras, contribuciones >= 0).
-    - Si el ideal implicara vender en algún activo, se reasigna a los infra ponderados.
+    Compute an ideal monthly contribution per asset to move towards target weights.
 
-    rebalance_threshold se mantiene en la firma por compatibilidad, pero no se usa
-    dentro de esta función (el umbral se aplica luego en la lógica de ventas opcionales).
+    Rules:
+    - We never sell inside this function (only non-negative contributions).
+    - If the ideal math solution would require selling, we cap that asset at 0 contribution.
+    - Remaining money is redistributed among underweight assets.
+
+    Note
+    ----
+    rebalance_threshold is kept in the signature for compatibility,
+    but the threshold is applied later when considering optional sales.
+
+    Returns
+    -------
+    dict
+        Mapping {asset_name: contribution_in_eur}.
     """
     holdings = portfolio.holdings
     targets = portfolio.targets
@@ -206,39 +269,41 @@ def compute_contribution_plan(
         total0 = 0.0
     total1 = total0 + C
 
-    # 1) Contribuciones "ideales" para acabar justo en los pesos objetivo
+    # 1) Ideal contribution to end exactly at target weights
     raw_contribs: dict[str, float] = {}
     for a, h in holdings.items():
         t = float(targets.get(a, 0.0))
         ideal_value = t * total1
         raw = ideal_value - float(h)
-        raw_contribs[a] = max(0.0, raw)  # nunca vendemos
+        raw_contribs[a] = max(0.0, raw)  # never sell
 
     sum_raw = sum(raw_contribs.values())
 
-    # Caso límite: nadie está claramente infraponderado
+    # Edge case: everyone looks roughly “on target”
     if sum_raw <= 0:
         sum_targets = sum(targets.values())
         if sum_targets <= 0:
             n = len(holdings)
             if n == 0:
                 return {}
-            uniforme = C / n
-            return {a: uniforme for a in holdings}
+            uniform = C / n
+            return {a: uniform for a in holdings}
+
         return {
             a: C * (float(targets.get(a, 0.0)) / sum_targets)
             for a in holdings
         }
 
-    # 2) Si la suma de "ideales" excede la aportación, escalamos todo
+    # 2) If ideal buys exceed available contribution, scale proportionally
     if sum_raw >= C:
         scale = C / sum_raw
         contribs = {a: raw_contribs[a] * scale for a in holdings}
     else:
-        # 3) Si nos sobra aportación, repartimos el sobrante según los pesos objetivo
+        # 3) If we still have money left, allocate extra according to target weights
         leftover = C - sum_raw
         contribs = raw_contribs.copy()
         sum_targets = sum(targets.values())
+
         if sum_targets <= 0:
             n = len(holdings)
             extra_each = leftover / n if n > 0 else 0.0
@@ -251,6 +316,10 @@ def compute_contribution_plan(
     return contribs
 
 
+# ==============================
+# Simple accumulation simulators
+# ==============================
+
 def simulate_constant_plan(
     current_total: float,
     monthly_contribution: float,
@@ -259,11 +328,13 @@ def simulate_constant_plan(
     extra_savings: float = 0.0,
 ):
     """
-    Simula un plan con aportación mensual constante y rentabilidad anual constante.
+    Simulate a constant monthly contribution plan with constant annual return.
 
-    Devuelve:
-    - valor final
-    - lista con el valor estimado mes a mes
+    Returns
+    -------
+    final_value : float
+    series : list[float]
+        Estimated portfolio value after each month.
     """
     months = int(years * 12)
     r_m = float(annual_return) / 12.0
@@ -280,26 +351,23 @@ def simulate_constant_plan(
 
 def required_constant_monthly_for_goal(
     current_total: float,
-    objetivo_final: float,
+    objective_final: float,
     years: int,
     annual_return: float,
     extra_savings: float = 0.0,
     tax_rate: float = 0.0,
 ) -> int:
     """
-    Calcula la aportación mensual CONSTANTE necesaria para alcanzar un objetivo bruto
-    'objetivo_final' en 'years' años, con rentabilidad anual 'annual_return'.
+    Compute the constant monthly contribution required to reach a target value.
 
-    tax_rate se mantiene por compatibilidad pero no se usa aquí (los impuestos
-    se tratan explícitamente en la lógica de la app).
+    tax_rate is kept for compatibility but not used (taxes are handled elsewhere).
     """
     months = int(years * 12)
     r_m = float(annual_return) / 12.0
     pv = float(current_total) + float(extra_savings)
 
-    # Sin interés (o casi): reparto lineal
     if abs(r_m) < 1e-12:
-        needed = objetivo_final - pv
+        needed = objective_final - pv
         if needed <= 0:
             return 0
         return int(round(needed / max(months, 1)))
@@ -307,10 +375,10 @@ def required_constant_monthly_for_goal(
     factor = (1.0 + r_m) ** months
     fv_pv = pv * factor
 
-    if fv_pv >= objetivo_final:
+    if fv_pv >= objective_final:
         return 0
 
-    pmt = (objetivo_final - fv_pv) * r_m / (factor - 1.0)
+    pmt = (objective_final - fv_pv) * r_m / (factor - 1.0)
     return int(round(max(0.0, pmt)))
 
 
@@ -322,8 +390,9 @@ def simulate_dca_ramp(
     initial_value: float = 0.0,
 ):
     """
-    Simula aportaciones mensuales CRECIENTES de forma lineal entre initial_monthly
-    y final_monthly durante 'years' años.
+    Simulate a DCA plan with linearly increasing monthly contributions.
+
+    Contributions grow linearly from initial_monthly to final_monthly over the horizon.
     """
     months = int(years * 12)
     r_m = float(annual_return) / 12.0
@@ -334,10 +403,7 @@ def simulate_dca_ramp(
         return value, series
 
     for m in range(months):
-        if months > 1:
-            frac = m / (months - 1)
-        else:
-            frac = 1.0
+        frac = m / (months - 1) if months > 1 else 1.0
         contrib = float(initial_monthly) + (float(final_monthly) - float(initial_monthly)) * frac
         value *= (1.0 + r_m)
         value += contrib
@@ -348,7 +414,7 @@ def simulate_dca_ramp(
 
 def required_growing_monthlies_for_goal(
     current_total: float,
-    objetivo_final: float,
+    objective_final: float,
     years: int,
     annual_return: float,
     initial_monthly: float,
@@ -356,17 +422,17 @@ def required_growing_monthlies_for_goal(
     tax_rate: float = 0.0,
 ):
     """
-    Dado un plan con aportaciones crecientes lineales desde initial_monthly hasta
-    una aportación final desconocida, busca (por búsqueda binaria) esa aportación
-    final necesaria para alcanzar 'objetivo_final' de forma BRUTA.
+    Find the final monthly contribution for a linearly growing plan that hits the target.
 
-    Devuelve:
-    - aportación mensual final aproximada
-    - una lista vacía (segundo valor se mantiene por compatibilidad con el código existente).
+    Returns
+    -------
+    final_monthly : int
+    []
+        Second return value kept only for backward compatibility.
     """
     initial_value = float(current_total) + float(extra_savings)
 
-    # Comprobamos si ya llegamos usando aportación plana = initial_monthly
+    # Check if starting monthly is already enough
     val0, _ = simulate_dca_ramp(
         initial_monthly=initial_monthly,
         final_monthly=initial_monthly,
@@ -374,12 +440,12 @@ def required_growing_monthlies_for_goal(
         annual_return=annual_return,
         initial_value=initial_value,
     )
-    if val0 >= objetivo_final:
+    if val0 >= objective_final:
         return int(round(initial_monthly)), []
 
+    months = int(years * 12)
     low = float(initial_monthly)
     high = max(float(initial_monthly) * 3.0, 5000.0)
-    final_val = val0
 
     for _ in range(40):
         mid = (low + high) / 2.0
@@ -390,32 +456,33 @@ def required_growing_monthlies_for_goal(
             annual_return=annual_return,
             initial_value=initial_value,
         )
-        if val_mid < objetivo_final:
+        if val_mid < objective_final:
             low = mid
         else:
             high = mid
-            final_val = val_mid  # noqa: F841
 
     return int(round(high)), []
 
-# --- Loader del universo de activos (CSV grande) ---
-@st.cache_data
-def load_universe_csv():
-    """
-    Carga el universo completo de activos desde el CSV generado
-    (ej: 'asset_universe.csv').
 
-    El CSV debe contener al menos:
+# ==============================
+# Asset universe CSV loader
+# ==============================
+
+@st.cache_data
+def load_universe_csv() -> pd.DataFrame:
+    """
+    Load the full instrument universe from the generated CSV (e.g. 'asset_universe.csv').
+
+    Expected columns:
     ISIN, Name, Type, Region, Country, Country_Code, ETF_Provider,
     ETF_Subtype, Distribution, Currency_Name, Is_ADR, Page, Search_Key
     """
     try:
         df = pd.read_csv("asset_universe.csv")
-        # Normalizamos algunas columnas clave
         for col in ["ISIN", "Name", "Search_Key"]:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.strip()
-        # Aseguramos columnas esperadas aunque vengan ausentes
+
         for col in ["Type", "Region", "Country", "ETF_Provider", "ETF_Subtype", "Currency_Name"]:
             if col not in df.columns:
                 df[col] = ""
@@ -424,880 +491,705 @@ def load_universe_csv():
         return pd.DataFrame()
 
 
+# ==============================
+# Streamlit app
+# ==============================
 
 st.set_page_config(
-    page_title="Planificador de cartera",
+    page_title="Portfolio Planner",
     page_icon="💶",
     layout="wide",
 )
 
-
-st.title("Planificador de cartera - Marcos Ibáñez")
+st.title("Portfolio Planner - Marcos Ibáñez")
 
 st.markdown(
     """
-Esta aplicación te permite gestionar de forma avanzada tu planificación financiera:
+This application helps you plan and manage your investments:
 
-- **Rebalanceo de activos**: reparte tu aportación periódica entre activos para mantener tus pesos objetivo, guardando/cargando carteras y visualizando cómo cambian tus porcentajes antes y después de invertir.  
-- **Objetivo a largo plazo**: calcula cuánto deberías aportar (de forma constante o creciente) para alcanzar un patrimonio deseado en X años, con opción de contemplar impuestos, evolución anual, sueldo necesario y gráficos.  
-- **Plan de vivienda**: planifica la entrada de un piso incluyendo gastos, rentabilidad, aportaciones constantes o crecientes, impuestos, y simulación de hipoteca.
+- **Portfolio rebalancing**: distribute your monthly contribution across assets to maintain target weights.  
+- **Long-term goal planning**: estimate how much you need to invest (constant or growing contributions) to reach a target wealth.  
+- **Housing plan**: plan a home down payment, extra costs, and mortgage.  
+- **Portfolio analysis**: additional analytics and summaries.
 
-Usa las pestañas de abajo para navegar por cada módulo.
+Use the tabs below to navigate each module.
 """
 )
 
 tab1, tab2, tab3, tab4 = st.tabs(
     [
-        "🔁 Rebalanceo de activos",
-        "🎯 Objetivo a largo plazo",
-        "🏠 Plan de vivienda",
-        "📊 Análisis de cartera",
+        "🔁 Portfolio rebalancing",
+        "🎯 Long-term goal",
+        "🏠 Housing plan",
+        "📊 Portfolio analysis",
     ]
 )
 
-
 # ============================
-# TAB 1: REBALANCEO MENSUAL
+# TAB 1: MONTHLY REBALANCING
 # ============================
 with tab1:
-    st.header("Asignación mensual y rebalanceo de activos")
+    st.header("Monthly contribution & portfolio rebalancing")
 
     st.markdown(
-        "1. Rellena la tabla con tus activos, tipo, valor actual y porcentaje objetivo.\n"
-        "2. Indica cuánto vas a aportar el próximo mes y el umbral de rebalanceo.\n"
-        "3. Pulsa el botón para ver cómo repartir el dinero."
+        "1. Fill the table with your assets, type, current value and target weight.\n"
+        "2. Enter how much you want to invest next month and the rebalance threshold.\n"
+        "3. Review the suggested plan and the before/after weights."
     )
 
-    # Cargamos solo los activos personalizados del usuario
     custom_assets = load_custom_assets()
 
-    # --- Normalización de tipos de activo del CSV ---
     def normalize_asset_type(raw_type: str) -> str:
-        """Normaliza el tipo de activo del CSV a las categorías usadas en la app."""
+        """
+            Normalize raw asset type into the categories used in the app.
+        """
         if not raw_type:
             return ""
         s = str(raw_type).strip().lower()
         if any(x in s for x in ["etf", "index fund", "fund", "fonds"]):
             return "ETF"
         if any(x in s for x in ["stock", "share", "equity", "aktion", "acción", "acciones"]):
-            return "Acción"
+            return "Stock"
         if any(x in s for x in ["bond", "renta fija", "obligat"]):
-            return "Bono"
+            return "Bond"
         if any(x in s for x in ["crypto", "bitcoin", "btc", "eth"]):
-            return "Criptomoneda"
+            return "Crypto"
         if any(x in s for x in ["derivative", "option", "future", "warrant"]):
-            return "Derivado"
+            return "Derivative"
         if any(x in s for x in ["fund", "sicav", "fond"]):
-            return "Fondo"
-        return "Otro"
+            return "Fund"
+        return "Other"
 
     @st.cache_data
     def build_universe_catalog() -> pd.DataFrame:
         """
-        Construye un catálogo de universo (Nombre, ISIN, Tipo) a partir del CSV completo.
+        Build a smaller catalog (Name, ISIN, Type) from the full universe CSV.
 
-        Se ejecuta una sola vez gracias a la caché; en los siguientes reruns, el resultado
-        se reutiliza directamente, evitando recomputar transformaciones caras sobre todo el CSV.
+        This is cached so we only process the large CSV once.
         """
         df = load_universe_csv()
         if df.empty:
-            return pd.DataFrame(columns=["Nombre", "ISIN", "Tipo"])
+            return pd.DataFrame(columns=["Name", "ISIN", "Type"])
 
         universe_small = df[["Name", "ISIN", "Type"]].copy()
-        universe_small["Nombre"] = universe_small["Name"].astype(str).str.strip()
+        universe_small["Name"] = universe_small["Name"].astype(str).str.strip()
         universe_small["ISIN"] = universe_small["ISIN"].astype(str).str.strip().str.upper()
-        universe_small["Tipo"] = universe_small["Type"].apply(normalize_asset_type)
-        universe_small = universe_small[["Nombre", "ISIN", "Tipo"]]
+        universe_small["Type"] = universe_small["Type"].apply(normalize_asset_type)
+        universe_small = universe_small.rename(columns={"Name": "Asset", "Type": "Type"})
 
-        # Limpiamos filas sin nombre o sin ISIN y eliminamos duplicados por ISIN
         universe_small = universe_small[
-            (universe_small["Nombre"] != "") & (universe_small["ISIN"] != "")
+            (universe_small["Asset"] != "") & (universe_small["ISIN"] != "")
         ]
         universe_small = universe_small.drop_duplicates(subset="ISIN").reset_index(drop=True)
-        return universe_small
+        return universe_small[["Asset", "ISIN", "Type"]]
 
-    # UI para crear activos personalizados locales
-    with st.expander("➕ Añadir activo personalizado a tu lista"):
-        nombre_custom = st.text_input(
-            "Nombre del activo personalizado",
-            key="nombre_activo_pers",
+    # --- Custom assets UI ---
+    with st.expander("➕ Add custom asset to your personal list"):
+        custom_name = st.text_input(
+            "Custom asset name",
+            key="custom_asset_name",
         )
-        tipo_custom = st.selectbox(
-            "Tipo del activo personalizado",
-            options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
-            key="tipo_activo_pers",
+        custom_type = st.selectbox(
+            "Custom asset type",
+            options=["ETF", "Stock", "Bond", "Derivative", "Crypto", "Fund", "Other"],
+            key="custom_asset_type",
         )
-        ticker_custom = st.text_input(
-            "Ticker (opcional)",
-            key="ticker_activo_pers",
+        custom_ticker = st.text_input(
+            "Ticker (optional)",
+            key="custom_asset_ticker",
         )
-        isin_custom = st.text_input(
-            "ISIN (opcional)",
-            key="isin_activo_pers",
+        custom_isin = st.text_input(
+            "ISIN (optional)",
+            key="custom_asset_isin",
         )
 
-        if st.button("Añadir activo personalizado", key="btn_add_custom"):
-            if not nombre_custom.strip():
-                st.error("El nombre del activo no puede estar vacío.")
+        if st.button("Add custom asset", key="btn_add_custom"):
+            if not custom_name.strip():
+                st.error("Asset name cannot be empty.")
             else:
-                existentes = load_custom_assets()
-                existentes.append(
+                existing = load_custom_assets()
+                existing.append(
                     {
-                        "nombre": nombre_custom.strip(),
-                        "tipo": tipo_custom,
-                        "ticker": ticker_custom.strip(),
-                        "isin": isin_custom.strip(),
+                        "nombre": custom_name.strip(),
+                        "tipo": custom_type,
+                        "ticker": custom_ticker.strip(),
+                        "isin": custom_isin.strip(),
                     }
                 )
-                save_custom_assets(existentes)
-                st.success(f"Activo personalizado '{nombre_custom}' añadido correctamente.")
+                save_custom_assets(existing)
+                st.success(f"Custom asset '{custom_name}' added successfully.")
                 st.rerun()
 
-    # Tabla vacía por defecto con esquema y tipos bien definidos
+    # --- Portfolio table schema ---
     default_data = pd.DataFrame(
         {
-            "Activo": pd.Series(dtype=str),
-            "Tipo": pd.Series(dtype=str),
+            "Asset": pd.Series(dtype=str),
+            "Type": pd.Series(dtype=str),
             "ISIN": pd.Series(dtype=str),
-            "Valor_actual_€": pd.Series(dtype=float),
-            "Peso_objetivo_%": pd.Series(dtype=float),
+            "Current_value_€": pd.Series(dtype=float),
+            "Target_weight_%": pd.Series(dtype=float),
         }
     )
 
-    def ensure_cartera_schema(df: pd.DataFrame) -> pd.DataFrame:
-        """Normaliza columnas y tipos de la cartera para que siempre encajen con data_editor."""
+    def ensure_portfolio_schema(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Ensure the portfolio DataFrame has all required columns and types.
+        """
         df = df.copy()
-
-        # Aseguramos que existan todas las columnas
         for col, default in [
-            ("Activo", ""),
-            ("Tipo", ""),
+            ("Asset", ""),
+            ("Type", ""),
             ("ISIN", ""),
-            ("Valor_actual_€", 0.0),
-            ("Peso_objetivo_%", 0.0),
+            ("Current_value_€", 0.0),
+            ("Target_weight_%", 0.0),
         ]:
             if col not in df.columns:
                 df[col] = default
 
-        # Tipos: texto para identificadores, float para cantidades
-        df["Activo"] = df["Activo"].astype(str)
-        df["Tipo"] = df["Tipo"].astype(str)
+        df["Asset"] = df["Asset"].astype(str)
+        df["Type"] = df["Type"].astype(str)
         df["ISIN"] = df["ISIN"].astype(str)
+        df["Current_value_€"] = pd.to_numeric(df["Current_value_€"], errors="coerce").fillna(0.0)
+        df["Target_weight_%"] = pd.to_numeric(df["Target_weight_%"], errors="coerce").fillna(0.0)
 
-        df["Valor_actual_€"] = pd.to_numeric(df["Valor_actual_€"], errors="coerce").fillna(0.0)
-        df["Peso_objetivo_%"] = pd.to_numeric(df["Peso_objetivo_%"], errors="coerce").fillna(0.0)
+        return df[["Asset", "Type", "ISIN", "Current_value_€", "Target_weight_%"]]
 
-        return df[["Activo", "Tipo", "ISIN", "Valor_actual_€", "Peso_objetivo_%"]]
-
-    # Inicializar cartera en sesión cargando de fichero si existe
-    if "cartera_df" not in st.session_state:
+    # Initialize portfolio from JSON if present
+    if "portfolio_df" not in st.session_state:
         if os.path.exists(PORTFOLIO_FILE):
             try:
                 loaded = pd.read_json(PORTFOLIO_FILE)
-                st.session_state["cartera_df"] = ensure_cartera_schema(loaded)
+                st.session_state["portfolio_df"] = ensure_portfolio_schema(loaded)
             except Exception:
-                st.session_state["cartera_df"] = default_data.copy()
+                st.session_state["portfolio_df"] = default_data.copy()
         else:
-            st.session_state["cartera_df"] = default_data.copy()
+            st.session_state["portfolio_df"] = default_data.copy()
 
-    # --- Catálogo de activos para el selector (Nombre + ISIN) ---
-    # DataFrame con los activos personalizados (normalmente pocos)
+    # Build catalog from custom + universe
     custom_rows = [
         {
-            "Nombre": str(a.get("nombre", "")).strip(),
+            "Asset": str(a.get("nombre", "")).strip(),
             "ISIN": str(a.get("isin", "")).strip().upper(),
-            "Tipo": str(a.get("tipo", "")).strip(),
+            "Type": str(a.get("tipo", "")).strip(),
         }
         for a in custom_assets
     ]
-    if custom_rows:
-        custom_catalog_df = pd.DataFrame(custom_rows)
-    else:
-        custom_catalog_df = pd.DataFrame(columns=["Nombre", "ISIN", "Tipo"])
+    custom_catalog_df = pd.DataFrame(custom_rows) if custom_rows else pd.DataFrame(
+        columns=["Asset", "ISIN", "Type"]
+    )
 
-    # Catálogo del universo grande, preprocesado y cacheado
     universe_small = build_universe_catalog()
-
     if not universe_small.empty:
         catalog_df = pd.concat([custom_catalog_df, universe_small], ignore_index=True)
     else:
         catalog_df = custom_catalog_df.copy()
 
     if not catalog_df.empty:
-        catalog_df = catalog_df[(catalog_df["Nombre"] != "") & (catalog_df["ISIN"] != "")]
+        catalog_df = catalog_df[(catalog_df["Asset"] != "") & (catalog_df["ISIN"] != "")]
         catalog_df = catalog_df.drop_duplicates(subset="ISIN").reset_index(drop=True)
 
-    st.subheader("📋 Activos de la cartera")
+    st.subheader("📋 Portfolio holdings")
 
-    # --- Formulario para añadir/actualizar un activo en la cartera ---
-    st.markdown("#### Añadir o actualizar un activo")
+    st.markdown("#### Add or update a holding")
 
-    # DataFrame actual de cartera (normalizado)
-    cartera_df_current = ensure_cartera_schema(st.session_state["cartera_df"])
+    portfolio_df_current = ensure_portfolio_schema(st.session_state["portfolio_df"])
 
+    # --- Asset selector ---
     if catalog_df.empty:
-        # Fallback manual si no hay catálogo con ISIN
         st.info(
-            "No se ha podido cargar el universo de activos con ISIN. "
-            "Puedes añadir activos personalizados en el panel superior y luego seleccionarlos aquí."
+            "The full asset universe could not be loaded. "
+            "You can add custom assets above and then select them here."
         )
-        nombre_manual = st.text_input("Nombre del activo")
-        isin_manual = st.text_input("ISIN")
-        tipo_manual = st.selectbox(
-            "Tipo de activo",
-            options=["ETF", "Acción", "Bono", "Derivado", "Criptomoneda", "Fondo", "Otro"],
+        manual_name = st.text_input("Asset name")
+        manual_isin = st.text_input("ISIN")
+        manual_type = st.selectbox(
+            "Asset type",
+            options=["ETF", "Stock", "Bond", "Derivative", "Crypto", "Fund", "Other"],
         )
-        selected_nombre = nombre_manual.strip()
-        selected_isin = isin_manual.strip().upper()
-        selected_tipo = tipo_manual
+        selected_name = manual_name.strip()
+        selected_isin = manual_isin.strip().upper()
+        selected_type = manual_type
     else:
-        # Selector por ISIN, mostrando Nombre (ISIN) para diferenciar activos con mismo nombre.
-        # Para que sea eficiente, precomputamos una etiqueta por fila y la usamos directamente,
-        # evitando aplicar un format_func costoso sobre miles de opciones en cada rerun.
         catalog_for_select = catalog_df.copy()
-        catalog_for_select["Label"] = catalog_for_select["Nombre"] + " (" + catalog_for_select["ISIN"] + ")"
+        catalog_for_select["Label"] = (
+            catalog_for_select["Asset"] + " (" + catalog_for_select["ISIN"] + ")"
+        )
 
         placeholder_label = ""
         label_options = [placeholder_label] + catalog_for_select["Label"].tolist()
 
-        # Si en el run anterior hemos indicado que hay que resetear el selector,
-        # lo hacemos AHORA, antes de instanciar el widget.
-        if st.session_state.get("reset_selector_activo", False):
-            st.session_state["selector_activo_label"] = placeholder_label
-            st.session_state["reset_selector_activo"] = False
+        if st.session_state.get("reset_asset_selector", False):
+            st.session_state["asset_selector_label"] = placeholder_label
+            st.session_state["reset_asset_selector"] = False
 
         selected_label = st.selectbox(
-            "Busca y selecciona un activo",
+            "Search and select an asset",
             options=label_options,
-            key="selector_activo_label",
+            key="asset_selector_label",
         )
 
         if selected_label == placeholder_label:
             selected_isin = ""
-            selected_nombre = ""
-            selected_tipo = ""
+            selected_name = ""
+            selected_type = ""
         else:
-            # Localizamos la fila seleccionada por etiqueta (solo una búsqueda por rerun)
-            fila_sel = catalog_for_select[catalog_for_select["Label"] == selected_label].iloc[0]
-            selected_isin = fila_sel["ISIN"]
-            selected_nombre = fila_sel["Nombre"]
-            selected_tipo = fila_sel["Tipo"] or ""
+            row_sel = catalog_for_select[catalog_for_select["Label"] == selected_label].iloc[0]
+            selected_isin = row_sel["ISIN"]
+            selected_name = row_sel["Asset"]
+            selected_type = row_sel["Type"] or ""
 
-    col_valor, col_peso = st.columns(2)
-    with col_valor:
-        valor_sel = st.number_input(
-            "Valor actual en cartera (€)",
+    col_val, col_weight = st.columns(2)
+    with col_val:
+        value_sel = st.number_input(
+            "Current value in portfolio (€)",
             min_value=0.0,
             step=50.0,
             value=0.0,
         )
-    with col_peso:
-        peso_sel = st.number_input(
-            "Peso objetivo (%) para este activo",
+    with col_weight:
+        weight_sel = st.number_input(
+            "Target weight (%) for this asset",
             min_value=0.0,
             step=1.0,
             value=0.0,
         )
 
-    if st.button("➕ Añadir / actualizar activo en la cartera"):
-        if not selected_nombre and not selected_isin:
-            st.error("Debes indicar al menos un nombre o un ISIN para el activo.")
+    if st.button("➕ Add / update asset in portfolio"):
+        if not selected_name and not selected_isin:
+            st.error("You must provide at least a name or an ISIN for the asset.")
         else:
-            df_cart = cartera_df_current.copy()
+            df_cart = portfolio_df_current.copy()
 
-            nueva_fila = {
-                "Activo": selected_nombre,
-                "Tipo": selected_tipo,
+            new_row = {
+                "Asset": selected_name,
+                "Type": selected_type,
                 "ISIN": selected_isin,
-                "Valor_actual_€": float(valor_sel),
-                "Peso_objetivo_%": float(peso_sel),
+                "Current_value_€": float(value_sel),
+                "Target_weight_%": float(weight_sel),
             }
 
-            # Si hay ISIN, usamos ISIN como clave; si no, usamos nombre
             if selected_isin:
                 mask = df_cart["ISIN"].astype(str).str.upper().eq(selected_isin)
             else:
-                mask = df_cart["Activo"].astype(str).str.strip().eq(selected_nombre)
+                mask = df_cart["Asset"].astype(str).str.strip().eq(selected_name)
 
-            # Si ya existe, ACTUALIZAMOS solo la primera coincidencia
             if mask.any():
-                idx_matches = df_cart.index[mask]
-                first_idx = idx_matches[0]
-
-                # Aseguramos que las columnas existen y actualizamos solo esas
-                for col, val in nueva_fila.items():
+                idx = df_cart.index[mask][0]
+                for col, val in new_row.items():
                     if col in df_cart.columns:
-                        df_cart.at[first_idx, col] = val
+                        df_cart.at[idx, col] = val
             else:
-                # Si no existe, añadimos una nueva fila
-                df_cart = pd.concat([df_cart, pd.DataFrame([nueva_fila])], ignore_index=True)
+                df_cart = pd.concat([df_cart, pd.DataFrame([new_row])], ignore_index=True)
 
-            st.session_state["cartera_df"] = ensure_cartera_schema(df_cart)
-            st.success("Activo añadido/actualizado en la cartera.")
-            # Marcamos que en el próximo run hay que resetear el selector de activo
-            st.session_state["reset_selector_activo"] = True
+            st.session_state["portfolio_df"] = ensure_portfolio_schema(df_cart)
+            st.success("Asset added/updated in portfolio.")
+            st.session_state["reset_asset_selector"] = True
             st.rerun()
 
-    # --- Tabla de cartera actual (solo lectura) ---
-    df_activos = ensure_cartera_schema(st.session_state["cartera_df"])
-    if df_activos.empty:
-        st.info("Todavía no has añadido activos a tu cartera.")
+    # --- Portfolio table (read-only) ---
+    df_holdings = ensure_portfolio_schema(st.session_state["portfolio_df"])
+    if df_holdings.empty:
+        st.info("You haven't added any assets to your portfolio yet.")
     else:
-        st.markdown("#### Cartera actual")
-        df_activos_show = df_activos.copy()
-        # Redondeamos importes en € y porcentajes a como máximo 2 decimales
-        if "Valor_actual_€" in df_activos_show.columns:
-            df_activos_show["Valor_actual_€"] = df_activos_show["Valor_actual_€"].round(2)
-        if "Peso_objetivo_%" in df_activos_show.columns:
-            df_activos_show["Peso_objetivo_%"] = df_activos_show["Peso_objetivo_%"].round(2)
-        st.dataframe(df_activos_show, use_container_width=True)
+        st.markdown("#### Current portfolio")
+        df_holdings_show = df_holdings.copy()
+        if "Current_value_€" in df_holdings_show.columns:
+            df_holdings_show["Current_value_€"] = df_holdings_show["Current_value_€"].round(2)
+        if "Target_weight_%" in df_holdings_show.columns:
+            df_holdings_show["Target_weight_%"] = df_holdings_show["Target_weight_%"].round(2)
+        st.dataframe(df_holdings_show, use_container_width=True)
 
-        # Opción para eliminar activos existentes
-        isins_en_cartera = df_activos["ISIN"].astype(str).str.strip().tolist()
-        if any(isins_en_cartera):
-            isins_unicos = sorted(set(i for i in isins_en_cartera if i))
+        # Delete assets by ISIN
+        isins_in_portfolio = df_holdings["ISIN"].astype(str).str.strip().tolist()
+        if any(isins_in_portfolio):
+            unique_isins = sorted(set(i for i in isins_in_portfolio if i))
             isin_to_delete = st.multiselect(
-                "Selecciona activos para eliminar de la cartera",
-                options=isins_unicos,
+                "Select assets to remove from the portfolio",
+                options=unique_isins,
                 format_func=lambda isin: (
-                    df_activos.loc[
-                        df_activos["ISIN"].astype(str).str.strip().eq(isin), "Activo"
-                    ].iloc[0]
-                    + f" ({isin})"
+                    df_holdings.loc[
+                        df_holdings["ISIN"].astype(str).str.strip().eq(isin),
+                        "Asset",
+                    ].iloc[0] + f" ({isin})"
                 ),
             )
-            if isin_to_delete and st.button("🗑️ Eliminar seleccionados"):
-                mask_del = df_activos["ISIN"].astype(str).str.strip().isin(isin_to_delete)
-                df_activos = df_activos[~mask_del].reset_index(drop=True)
-                st.session_state["cartera_df"] = ensure_cartera_schema(df_activos)
-                st.success("Activos eliminados de la cartera.")
+            if isin_to_delete and st.button("🗑️ Remove selected"):
+                mask_del = df_holdings["ISIN"].astype(str).str.strip().isin(isin_to_delete)
+                df_holdings = df_holdings[~mask_del].reset_index(drop=True)
+                st.session_state["portfolio_df"] = ensure_portfolio_schema(df_holdings)
+                st.success("Assets removed from portfolio.")
                 st.rerun()
 
-    # Mostrar suma de pesos objetivo justo debajo de la tabla (solo filas con Activo no vacío)
+    # --- Target weight sum & normalization ---
     show_normalize_button = False
     try:
-        df_live = df_activos.copy()
-        df_live = df_live[df_live["Activo"].astype(str).str.strip().ne("")]
-        suma_pesos_live = float(df_live["Peso_objetivo_%"].sum())
+        df_live = df_holdings.copy()
+        df_live = df_live[df_live["Asset"].astype(str).str.strip().ne("")]
+        sum_weights_live = float(df_live["Target_weight_%"].sum())
         st.markdown(
-            f"**Suma de pesos objetivo (filas con activo) en tiempo real: {suma_pesos_live:.2f}%**"
+            f"**Sum of target weights (non-empty rows): {sum_weights_live:.2f}%**"
         )
-        # Solo mostramos el botón si la suma se pasa o se queda corta fuera del rango 98.5–101.5%
-        if not (98.5 <= suma_pesos_live <= 101.5):
+        if not (98.5 <= sum_weights_live <= 101.5):
             show_normalize_button = True
     except Exception:
         show_normalize_button = False
 
-    # Botón para normalizar pesos objetivo a 100% (solo si la suma está fuera del rango)
-    if show_normalize_button and st.button("⚖️ Normalizar pesos objetivo al 100%", key="normalizar_pesos"):
+    if show_normalize_button and st.button("⚖️ Normalize target weights to 100%", key="normalize_weights"):
         try:
-            df_norm = df_activos.copy()
-            # Consideramos solo filas con activo no vacío
-            mask_valid = df_norm["Activo"].astype(str).str.strip().ne("")
-            suma = df_norm.loc[mask_valid, "Peso_objetivo_%"].sum()
-
+            df_norm = df_holdings.copy()
+            mask_valid = df_norm["Asset"].astype(str).str.strip().ne("")
+            suma = df_norm.loc[mask_valid, "Target_weight_%"].sum()
             if suma > 0:
-                serie_norm = df_norm.loc[mask_valid, "Peso_objetivo_%"] / suma * 100.0
-                df_norm.loc[mask_valid, "Peso_objetivo_%"] = serie_norm.round(2)
-                st.session_state["cartera_df"] = df_norm
-                st.success("Pesos normalizados correctamente al 100% sobre las filas con activo.")
+                serie_norm = df_norm.loc[mask_valid, "Target_weight_%"] / suma * 100.0
+                df_norm.loc[mask_valid, "Target_weight_%"] = serie_norm.round(2)
+                st.session_state["portfolio_df"] = df_norm
+                st.success("Target weights normalized to 100% over non-empty rows.")
                 st.rerun()
             else:
-                st.error("La suma de pesos objetivo de las filas con activo es 0. No se puede normalizar.")
+                st.error("The sum of target weights is 0. Cannot normalize.")
         except Exception as e:
-            st.error(f"No se pudo normalizar los pesos: {e}")
+            st.error(f"Could not normalize target weights: {e}")
 
-    # Filtrar filas vacías (sin activo) para el resto de cálculos y gráficos
-    df_activos = df_activos[df_activos["Activo"].astype(str).str.strip().ne("")].copy()
+    # Filter out empty rows for further calculations/plots
+    df_holdings = df_holdings[df_holdings["Asset"].astype(str).str.strip().ne("")].copy()
 
-    # Gráfico de tarta con la distribución actual de la cartera (en tiempo real)
-    if not df_activos.empty:
-        total_valor = float(df_activos["Valor_actual_€"].sum()) if "Valor_actual_€" in df_activos else 0.0
+    # --- Charts: current vs target allocation (more professional layout) ---
+    if not df_holdings.empty:
+        total_value = float(df_holdings["Current_value_€"].sum()) if "Current_value_€" in df_holdings else 0.0
 
-        # Si no hay valor invertido, no intentamos dibujar el pie chart
-        if total_valor <= 0:
+        if total_value <= 0:
             st.info(
-                "Introduce algún valor actual (> 0 €) en tus activos para poder mostrar el gráfico de distribución."
+                "Enter a positive current value for your holdings to display the allocation charts."
             )
         else:
-            pesos_actuales = df_activos["Valor_actual_€"] / total_valor
+            # Compute current and target weights
+            df_chart = df_holdings.copy()
+            df_chart["Current_weight_%"] = (
+                df_chart["Current_value_€"] / total_value * 100.0
+            )
+            df_chart["Target_weight_%"] = df_chart["Target_weight_%"].astype(float)
 
-            labels = df_activos["Activo"].tolist()
-            tipos = df_activos["Tipo"].tolist()
+            # Sort by current weight descending
+            df_chart = df_chart.sort_values("Current_weight_%", ascending=False).reset_index(drop=True)
 
-            # Mapa de colores por tipo de activo (para el pie chart)
+            # Color by type
             type_colors = {
                 "ETF": "#1f77b4",
-                "Acción": "#ff7f0e",
-                "Bono": "#2ca02c",
-                "Derivado": "#d62728",
-                "Criptomoneda": "#9467bd",
-                "Fondo": "#8c564b",
-                "Otro": "#7f7f7f",
+                "Stock": "#ff7f0e",
+                "Bond": "#2ca02c",
+                "Derivative": "#d62728",
+                "Crypto": "#9467bd",
+                "Fund": "#8c564b",
+                "Other": "#7f7f7f",
             }
-            colors = [type_colors.get(t, "#7f7f7f") for t in tipos]
+            colors = [type_colors.get(t, "#7f7f7f") for t in df_chart["Type"].tolist()]
 
-            # Ajustar texto al tema actual de Streamlit (oscuro / claro)
-            theme_base = st.get_option("theme.base")
-            text_color = st.get_option("theme.textColor")
+            # Let Streamlit decide the text color based on theme (light/dark/system)
+            text_color = st.get_option("theme.textColor") or "#000000"
 
-            # Si no hay color definido o estamos en tema oscuro, forzamos blanco para máxima legibilidad.
-            if theme_base == "dark" or not text_color:
-                text_color = "#FFFFFF"
-            else:
-                text_color = text_color or "#000000"
+            col_current, col_targets = st.columns(2)
 
-            col_pie, col_bar = st.columns(2)
+            # --- Current allocation chart ---
+            with col_current:
+                st.markdown("#### Current allocation by asset (% of portfolio)")
 
-            # Pie chart más pequeño a la izquierda
-            with col_pie:
-                st.markdown("#### Distribución actual de la cartera (por valor de mercado)")
+                fig_cur, ax_cur = plt.subplots(figsize=(4, max(2, 0.25 * len(df_chart))))
+                fig_cur.patch.set_facecolor("none")
+                ax_cur.set_facecolor("none")
 
-                fig, ax = plt.subplots(figsize=(4, 4))
-                fig.patch.set_facecolor("none")
-                ax.set_facecolor("none")
+                y_pos = range(len(df_chart))
+                ax_cur.barh(y_pos, df_chart["Current_weight_%"], color=colors)
+                ax_cur.set_yticks(y_pos)
+                ax_cur.set_yticklabels(df_chart["Asset"], fontsize=7)
+                ax_cur.invert_yaxis()  # largest on top
+                ax_cur.set_xlabel("Current weight (%)", fontsize=8)
 
-                wedges, texts, autotexts = ax.pie(
-                    pesos_actuales,
-                    labels=labels,
-                    autopct="%1.1f%%",
-                    startangle=90,
-                    colors=colors,
-                )
-                ax.axis("equal")
-
-                for t in texts + autotexts:
-                    t.set_color(text_color)
-
-                st.pyplot(fig)
-
-                unique_tipos = []
-                unique_colors = []
-                for t, c in zip(tipos, colors):
-                    if t not in unique_tipos:
-                        unique_tipos.append(t)
-                        unique_colors.append(c)
-
-                if unique_tipos:
-                    legend_lines = []
-                    for t, c in zip(unique_tipos, unique_colors):
-                        legend_lines.append(
-                            f"<span style='font-size:0.85em;'><span style='color:{c}'>■</span> {t}</span>"
-                        )
-                    st.markdown("<br/>".join(legend_lines), unsafe_allow_html=True)
-
-            # Bar chart con valor actual de cada activo a la derecha
-            with col_bar:
-                st.markdown("#### Valor actual por activo")
-
-                df_sorted = df_activos.sort_values("Valor_actual_€", ascending=False).copy()
-                nombres = df_sorted["Activo"].tolist()
-                valores = df_sorted["Valor_actual_€"].tolist()
-                tipos_sorted = df_sorted["Tipo"].tolist()
-                x_pos = list(range(len(nombres)))
-
-                # Colores por tipo de activo (mismos que en el pie chart)
-                bar_colors = [type_colors.get(t, "#7f7f7f") for t in tipos_sorted]
-
-                # Gráfico más compacto para equilibrar con el pie chart
-                fig_bar, ax_bar = plt.subplots(figsize=(2, 2))
-                fig_bar.patch.set_facecolor("none")
-                ax_bar.set_facecolor("none")
-
-                bars = ax_bar.bar(x_pos, valores, color=bar_colors)
-                ax_bar.set_xticks(x_pos)
-                ax_bar.set_xticklabels(nombres, rotation=35, ha="right", fontsize=5)
-                ax_bar.set_ylabel("Valor actual (€)", fontsize=3.5)
-
-                # Adaptamos colores de texto y ejes al tema actual (oscuro / claro)
-                ax_bar.tick_params(axis="x", colors=text_color, labelsize=3.5)
-                ax_bar.tick_params(axis="y", colors=text_color, labelsize=3.5)
-                ax_bar.yaxis.label.set_color(text_color)
-                for spine in ax_bar.spines.values():
+                # Grid and colors
+                ax_cur.xaxis.grid(True, linestyle="--", alpha=0.3)
+                ax_cur.tick_params(axis="x", colors=text_color, labelsize=7)
+                ax_cur.tick_params(axis="y", colors=text_color, labelsize=7)
+                ax_cur.xaxis.label.set_color(text_color)
+                for spine in ax_cur.spines.values():
                     spine.set_color(text_color)
 
-                # Borde de las barras adaptado al tema, manteniendo el color de relleno por tipo
-                for bar in bars:
-                    bar.set_edgecolor(text_color)
-
-                fig_bar.tight_layout()
-
-                st.pyplot(fig_bar)
-
-    else:
-        st.info("Añade activos a la tabla y asigna un valor actual para ver el gráfico de distribución.")
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        monthly_contribution = st.number_input(
-            "¿Cuánto dinero quieres aportar el próximo mes? (€)",
-            min_value=0,
-            step=10,
-            value=150,
-        )
-
-        umbral_pct = st.number_input(
-            "Umbral de rebalanceo (en puntos porcentuales, ej. 2 = 2%)",
-            min_value=0.0,
-            step=0.5,
-            value=2.0,
-        )
-
-    # --- Cálculo del plan de aportación en tiempo real ---
-    if df_activos.empty:
-        st.info(
-            "Añade al menos un activo en la tabla (con valor actual y peso objetivo) "
-            "para poder calcular el plan de aportación."
-        )
-    elif monthly_contribution <= 0:
-        st.info("Introduce una aportación mensual mayor que 0 para calcular el plan de aportación.")
-    else:
-        # Construir diccionarios para Portfolio
-        holdings = {}
-        targets = {}
-        asset_types = {}
-
-        for _, row in df_activos.iterrows():
-            nombre = str(row["Activo"]).strip()
-            tipo = str(row["Tipo"]).strip()
-            valor = float(row["Valor_actual_€"])
-            peso_pct = float(row["Peso_objetivo_%"])
-
-            holdings[nombre] = valor
-            targets[nombre] = peso_pct / 100.0
-            asset_types[nombre] = tipo
-
-        # Normalizar targets si no suman 1
-        suma_targets = sum(targets.values())
-        if suma_targets == 0:
-            st.error("Los pesos objetivo no pueden ser todos cero.")
-        else:
-            if abs(suma_targets - 1.0) > 0.01:
-                st.info("Normalizando porcentajes objetivo para que sumen 100%.")
-                targets = {k: v / suma_targets for k, v in targets.items()}
-
-            portfolio = Portfolio(
-                holdings=holdings,
-                targets=targets,
-                asset_types=asset_types,
-            )
-
-            rebalance_threshold = umbral_pct / 100.0
-
-            plan = compute_contribution_plan(
-                portfolio=portfolio,
-                monthly_contribution=float(monthly_contribution),
-                rebalance_threshold=rebalance_threshold,
-            )
-
-            # Convertimos el plan a importes ENTEROS en euros que sumen exactamente la aportación mensual
-            C = float(monthly_contribution)
-            plan_raw = {a: max(0.0, float(v)) for a, v in plan.items()}
-            total_raw = sum(plan_raw.values())
-
-            if C <= 0 or not plan_raw:
-                plan_int = {a: 0 for a in plan_raw}
-            else:
-                if total_raw > 0:
-                    # Proporcional al plan original, ajustado a que la suma sea C
-                    alloc_float = {a: (plan_raw[a] / total_raw) * C for a in plan_raw}
-                else:
-                    # Si por alguna razón el plan original suma 0, repartimos C a partes iguales
-                    n = len(plan_raw)
-                    alloc_float = {a: C / n for a in plan_raw} if n > 0 else {}
-
-                # Pasamos a enteros asegurando que la suma sea exactamente C
-                floors = {a: int(alloc_float[a]) for a in alloc_float}
-                sum_floor = sum(floors.values())
-                diff = int(round(C - sum_floor))
-
-                if diff > 0:
-                    # Repartimos euros extra empezando por los mayores decimales
-                    remainders = sorted(
-                        [(a, alloc_float[a] - floors[a]) for a in alloc_float],
-                        key=lambda x: x[1],
-                        reverse=True,
+                # Show value labels at the end of the bars
+                for i, (w, val) in enumerate(zip(df_chart["Current_weight_%"], df_chart["Current_value_€"])):
+                    ax_cur.text(
+                        w + 0.3,
+                        i,
+                        f"{w:.1f}%\n{val:,.0f}€",
+                        va="center",
+                        fontsize=6,
+                        color=text_color,
                     )
-                    for i in range(min(diff, len(remainders))):
-                        a = remainders[i][0]
-                        floors[a] += 1
-                elif diff < 0:
-                    # Quitamos euros empezando por los menores decimales
-                    remainders = sorted(
-                        [(a, alloc_float[a] - floors[a]) for a in alloc_float],
-                        key=lambda x: x[1],
-                    )
-                    to_remove = min(-diff, len(remainders))
-                    i = 0
-                    while to_remove > 0 and i < len(remainders):
-                        a = remainders[i][0]
-                        if floors[a] > 0:
-                            floors[a] -= 1
-                            to_remove -= 1
-                        i += 1
 
-                plan_int = floors
+                fig_cur.tight_layout()
+                st.pyplot(fig_cur)
 
-            # A partir de aquí, usamos el plan entero en todos los cálculos y tablas
-            plan = plan_int
+            # --- Target vs current comparison chart ---
+            with col_targets:
+                st.markdown("#### Target vs current weights by asset")
 
-            st.subheader("✅ Plan de aportación sugerido (actualizado en tiempo real)")
+                fig_tar, ax_tar = plt.subplots(figsize=(4, max(2, 0.25 * len(df_chart))))
+                fig_tar.patch.set_facecolor("none")
+                ax_tar.set_facecolor("none")
 
-            df_plan = pd.DataFrame(
-                {
-                    "Activo": list(plan.keys()),
-                    "Aportación_mes_€": list(plan.values()),
-                }
-            )
-
-            # Mostrar las aportaciones mensuales como enteros (sin decimales)
-            df_plan["Aportación_mes_€"] = df_plan["Aportación_mes_€"].astype(int)
-
-            st.dataframe(df_plan)
-            st.markdown(
-                "Esta tabla indica **cómo repartir la aportación del próximo mes** entre tus activos "
-                "para acercarte a los porcentajes objetivo, **sin vender nada**, solo añadiendo dinero nuevo. "
-                "Se recalcula automáticamente cada vez que modificas la tabla o los parámetros."
-            )
-
-            # Mostrar situación de la cartera antes y después de aplicar la aportación mensual
-            st.subheader("⚖️ Situación de la cartera: antes y después de la aportación")
-
-            total_actual = portfolio.total_value()
-            pesos_actuales = portfolio.current_weights()
-
-            # Valores y pesos después de aplicar el plan de aportación
-            total_despues = total_actual + float(monthly_contribution)
-            valores_despues = {
-                a: holdings[a] + float(plan.get(a, 0.0)) for a in holdings.keys()
-            }
-            if total_despues > 0:
-                pesos_despues = {
-                    a: valores_despues[a] / total_despues for a in holdings.keys()
-                }
-            else:
-                pesos_despues = {a: 0.0 for a in holdings.keys()}
-
-            df_pesos = pd.DataFrame(
-                {
-                    "Activo": list(holdings.keys()),
-                    "Valor_antes_€": [holdings[a] for a in holdings.keys()],
-                    "Peso_antes_%": [pesos_actuales[a] * 100 for a in holdings.keys()],
-                    "Aportación_mes_€": [float(plan.get(a, 0.0)) for a in holdings.keys()],
-                    "Valor_despues_€": [valores_despues[a] for a in holdings.keys()],
-                    "Peso_despues_%": [pesos_despues[a] * 100 for a in holdings.keys()],
-                    "Peso_objetivo_%": [targets[a] * 100 for a in holdings.keys()],
-                }
-            )
-
-            # Redondeamos porcentajes a dos decimales
-            for col_pct in ["Peso_antes_%", "Peso_despues_%", "Peso_objetivo_%"]:
-                df_pesos[col_pct] = df_pesos[col_pct].round(2)
-            # Cantidades en €: máximo 2 decimales, salvo la aportación mensual que será entero
-            for col_eur in ["Valor_antes_€", "Valor_despues_€"]:
-                df_pesos[col_eur] = df_pesos[col_eur].round(2)
-            df_pesos["Aportación_mes_€"] = df_pesos["Aportación_mes_€"].astype(int)
-
-            st.dataframe(df_pesos)
-
-            st.markdown(
-                "En esta tabla puedes ver, para cada activo: "
-                "**valor y peso ANTES**, la **aportación del mes**, y el **valor y peso DESPUÉS** de aplicar el plan, "
-                "junto con el peso objetivo que quieres mantener.\n\n"
-                "Esto te ayuda a ver si la cartera se acerca a tus porcentajes objetivo usando solo dinero nuevo, "
-                "sin necesidad de vender posiciones."
-            )
-
-            # --- Escenario alternativo: incluir ventas si solo con compras no se entra en los porcentajes objetivo ---
-            # Comprobamos si, tras aplicar solo la aportación del mes, alguna posición sigue fuera del umbral
-            fuera_umbral = []
-            for a in holdings.keys():
-                peso_obj_pp = targets[a] * 100.0
-                peso_desp_pp = pesos_despues[a] * 100.0
-                diff_pp = abs(peso_desp_pp - peso_obj_pp)
-                if diff_pp > umbral_pct + 1e-6:
-                    fuera_umbral.append(a)
-
-            if fuera_umbral:
-                st.subheader("💸 Escenario con ventas para llegar exactamente a los porcentajes objetivo")
-                st.markdown(
-                    "Con solo la aportación de **este mes** no es posible dejar **todas** las posiciones dentro del "
-                    "umbral de rebalanceo definido. A continuación se muestra un escenario en el que, además de "
-                    "las compras del plan, se realizan **ventas mínimas necesarias** en los activos sobreponderados "
-                    "para llegar exactamente a los pesos objetivo."
+                y_pos = range(len(df_chart))
+                # Background: target weights (light bar)
+                ax_tar.barh(
+                    y_pos,
+                    df_chart["Target_weight_%"],
+                    color=["#dddddd"] * len(df_chart),
+                    label="Target",
+                )
+                # Foreground: current weights (colored by type)
+                ax_tar.barh(
+                    y_pos,
+                    df_chart["Current_weight_%"],
+                    color=colors,
+                    alpha=0.9,
+                    label="Current",
                 )
 
-                # Valor total tras aplicar únicamente la aportación (sin ventas)
-                total_despues_solo_compras = total_despues
+                ax_tar.set_yticks(y_pos)
+                ax_tar.set_yticklabels(df_chart["Asset"], fontsize=7)
+                ax_tar.invert_yaxis()
+                ax_tar.set_xlabel("Weight (%)", fontsize=8)
 
-                # Holdings ideales si rebalanceamos completamente (compras + ventas) a los pesos objetivo
-                ideal_holdings = {
-                    a: targets[a] * total_despues_solo_compras for a in holdings.keys()
+                ax_tar.xaxis.grid(True, linestyle="--", alpha=0.3)
+                ax_tar.tick_params(axis="x", colors=text_color, labelsize=7)
+                ax_tar.tick_params(axis="y", colors=text_color, labelsize=7)
+                ax_tar.xaxis.label.set_color(text_color)
+                for spine in ax_tar.spines.values():
+                    spine.set_color(text_color)
+
+                # Simple legend note (text only)
+                legend_text = "Grey = Target, Colored = Current (by asset type)"
+                ax_tar.text(
+                    0.0,
+                    -0.8,
+                    legend_text,
+                    fontsize=7,
+                    color=text_color,
+                    transform=ax_tar.transAxes,
+                )
+
+                fig_tar.tight_layout()
+                st.pyplot(fig_tar)
+    else:
+        st.info("Add assets and set a current value to display the allocation charts.")
+
+    # ============================
+    # REBALANCING PLAN (TAB 1)
+    # ============================
+
+    st.markdown("---")
+    st.subheader("Suggested monthly contribution plan")
+
+    if df_holdings.empty:
+        st.info("Add assets to your portfolio and define target weights to compute a contribution plan.")
+    else:
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            monthly_contribution = st.number_input(
+                "Monthly contribution to invest (€)",
+                min_value=0,
+                step=50,
+                value=500,
+                help="Amount you plan to invest next month that will be distributed across your assets.",
+            )
+        with col_c2:
+            rebalance_threshold = st.number_input(
+                "Max allowed deviation vs target weights (percentage points)",
+                min_value=0.0,
+                max_value=20.0,
+                step=0.5,
+                value=2.0,
+                help=(
+                    "After applying the contribution, if an asset is still above its target weight + this threshold, "
+                    "it will be flagged as overweight for potential sales."
+                ),
+            )
+
+        if monthly_contribution <= 0:
+            st.info("Enter a positive monthly contribution to compute the plan.")
+        else:
+            holdings_map = {
+                row["Asset"]: float(row["Current_value_€"])
+                for _, row in df_holdings.iterrows()
+            }
+            targets_map = {
+                row["Asset"]: float(row["Target_weight_%"]) / 100.0
+                for _, row in df_holdings.iterrows()
+            }
+            types_map = {
+                row["Asset"]: row["Type"]
+                for _, row in df_holdings.iterrows()
+            }
+
+            port = Portfolio(holdings=holdings_map, targets=targets_map, asset_types=types_map)
+
+            contrib_plan = compute_contribution_plan(
+                portfolio=port,
+                monthly_contribution=float(monthly_contribution),
+                rebalance_threshold=float(rebalance_threshold),
+            )
+
+            contrib_plan = {a: float(v) for a, v in contrib_plan.items()}
+            contrib_plan = {a: round(v) for a, v in contrib_plan.items()}  # integer euros
+
+            total_before = port.total_value()
+            total_after = total_before + sum(contrib_plan.values())
+
+            current_weights = port.current_weights()
+            weights_after = {}
+            for asset, h0 in holdings_map.items():
+                h1 = h0 + contrib_plan.get(asset, 0.0)
+                weights_after[asset] = (h1 / total_after) if total_after > 0 else 0.0
+
+            rows_plan = []
+            for asset in holdings_map.keys():
+                h0 = float(holdings_map[asset])
+                w0 = float(current_weights.get(asset, 0.0)) * 100.0
+                target_pct = float(targets_map.get(asset, 0.0)) * 100.0
+                buy = float(contrib_plan.get(asset, 0.0))
+                h1 = h0 + buy
+                w1 = float(weights_after.get(asset, 0.0)) * 100.0
+                diff_after = w1 - target_pct
+
+                rows_plan.append(
+                    {
+                        "Asset": asset,
+                        "Type": types_map.get(asset, ""),
+                        "Current_value_€": round(h0, 2),
+                        "Current_weight_%": round(w0, 2),
+                        "Target_weight_%": round(target_pct, 2),
+                        "Suggested_buy_€": round(buy, 0),
+                        "New_value_€": round(h1, 2),
+                        "New_weight_%": round(w1, 2),
+                        "Deviation_after_pp": round(diff_after, 2),
+                    }
+                )
+
+            df_plan = pd.DataFrame(rows_plan)
+
+            st.markdown("#### Allocation before and after monthly contribution")
+            st.dataframe(df_plan, use_container_width=True)
+
+            st.markdown(
+                f"**Total current portfolio value:** {total_before:,.2f} €  "+
+                f"**Total after contribution:** {total_after:,.2f} €"
+            )
+
+            # ----------------------
+            # OPTIONAL SALES SECTION
+            # ----------------------
+
+            st.markdown("---")
+            st.subheader("Optional sales to reduce overweight positions")
+
+            overweight_assets = [
+                r
+                for r in rows_plan
+                if r["New_weight_%"] > r["Target_weight_%"] + float(rebalance_threshold)
+            ]
+
+            if not overweight_assets:
+                st.info(
+                    "After applying the suggested contribution, no asset exceeds its target weight "
+                    "+ threshold. No sales are strictly required from a rebalancing perspective."
+                )
+            else:
+                st.markdown(
+                    "The following assets would still be **overweight** after applying the monthly contribution. "
+                    "Below is a minimal sales plan that reduces them towards their target + threshold (as upper bound)."
+                )
+
+                total_value_sales = total_after
+                values_after = {
+                    r["Asset"]: float(r["New_value_€"]) for r in rows_plan
                 }
 
-                # Diferencias respecto a la situación tras la aportación:
-                # diff > 0  -> compra adicional necesaria
-                # diff < 0  -> venta necesaria
-                ventas = {}
-                compras = {}
-                for a in holdings.keys():
-                    actual = valores_despues[a]
-                    ideal = ideal_holdings[a]
-                    diff = ideal - actual
-                    if diff < 0:
-                        ventas[a] = -diff
-                        compras[a] = 0.0
-                    elif diff > 0:
-                        ventas[a] = 0.0
-                        compras[a] = diff
-                    else:
-                        ventas[a] = 0.0
-                        compras[a] = 0.0
+                sales = {asset: 0.0 for asset in values_after.keys()}
 
-                venta_total = float(sum(ventas.values()))
-                compra_total = float(sum(compras.values()))
+                overweight_sorted = sorted(
+                    overweight_assets,
+                    key=lambda r: r["New_weight_%"] - r["Target_weight_%"],
+                    reverse=True,
+                )
 
-                # Por construcción, si usamos ideal_holdings la suma de ventas y compras debería ser casi igual.
-                # Permitimos un pequeño desajuste numérico y redondeamos solo para mostrar.
-                if venta_total <= 1e-6:
+                for r in overweight_sorted:
+                    asset = r["Asset"]
+                    target_pct = r["Target_weight_%"]
+                    max_pct = target_pct + float(rebalance_threshold)
+                    v = values_after[asset]
+
+                    if total_value_sales <= 0:
+                        break
+
+                    w_current = v / total_value_sales * 100.0
+                    if w_current <= max_pct:
+                        continue
+
+                    numerator = max_pct * total_value_sales - v * 100.0
+                    denominator = max_pct - 100.0
+                    if abs(denominator) < 1e-9:
+                        continue
+
+                    sale_amount = numerator / denominator
+                    if sale_amount <= 0:
+                        continue
+
+                    sale_amount = min(sale_amount, v)
+
+                    sales[asset] += sale_amount
+                    values_after[asset] -= sale_amount
+                    total_value_sales -= sale_amount
+
+                sales = {a: round(v) for a, v in sales.items() if v > 1.0}
+
+                if not sales:
                     st.info(
-                        "En la práctica, las desviaciones son muy pequeñas y no merece la pena plantear ventas adicionales."
+                        "Overweight positions are mild enough that a sales plan would be very small or unnecessary."
                     )
                 else:
-                    # Valores finales después de aplicar el rebalanceo completo
-                    valores_final = ideal_holdings.copy()
-                    total_final = total_despues_solo_compras
-                    if total_final <= 0:
-                        total_final = 1e-9
+                    rows_sales = []
+                    total_sales_amount = 0.0
+                    for asset, s_amount in sales.items():
+                        v_before = next(r["New_value_€"] for r in rows_plan if r["Asset"] == asset)
+                        v_after = max(0.0, v_before - s_amount)
+                        w_before = v_before / total_after * 100.0 if total_after > 0 else 0.0
+                        w_after = v_after / total_value_sales * 100.0 if total_value_sales > 0 else 0.0
 
-                    # Los pesos finales coinciden (por construcción) con los objetivos
-                    pesos_final = {a: targets[a] for a in holdings.keys()}
+                        rows_sales.append(
+                            {
+                                "Asset": asset,
+                                "Type": types_map.get(asset, ""),
+                                "Sale_€": round(s_amount, 0),
+                                "Value_before_sale_€": round(v_before, 2),
+                                "Value_after_sale_€": round(v_after, 2),
+                                "Weight_before_sale_%": round(w_before, 2),
+                                "Weight_after_sale_%": round(w_after, 2),
+                            }
+                        )
+                        total_sales_amount += s_amount
 
-                    df_ventas = pd.DataFrame(
-                        {
-                            "Activo": list(holdings.keys()),
-                            "Tipo": [asset_types.get(a, "") for a in holdings.keys()],
-                            "Valor_antes_€": [holdings[a] for a in holdings.keys()],
-                            "Aportación_mes_€": [float(plan.get(a, 0.0)) for a in holdings.keys()],
-                            "Valor_despues_solo_compras_€": [valores_despues[a] for a in holdings.keys()],
-                            "Peso_despues_solo_compras_%": [pesos_despues[a] * 100 for a in holdings.keys()],
-                            "Peso_objetivo_%": [targets[a] * 100 for a in holdings.keys()],
-                            "Venta_necesaria_€": [ventas[a] for a in holdings.keys()],
-                            "Compra_extra_€": [compras[a] for a in holdings.keys()],
-                            "Valor_final_post_venta_€": [valores_final[a] for a in holdings.keys()],
-                            "Peso_final_%": [pesos_final[a] * 100 for a in holdings.keys()],
-                        }
-                    )
+                    df_sales = pd.DataFrame(rows_sales)
 
-                    # Formateo: porcentajes con 2 decimales
-                    for col_pct in ["Peso_despues_solo_compras_%", "Peso_objetivo_%", "Peso_final_%"]:
-                        df_ventas[col_pct] = df_ventas[col_pct].round(2)
-
-                    # Cantidades en €: máximo 2 decimales, salvo aportación mensual y ventas necesarias que serán enteros
-                    for col_eur in [
-                        "Valor_antes_€",
-                        "Valor_despues_solo_compras_€",
-                        "Compra_extra_€",
-                        "Valor_final_post_venta_€",
-                    ]:
-                        df_ventas[col_eur] = df_ventas[col_eur].round(2)
-
-                    df_ventas["Aportación_mes_€"] = df_ventas["Aportación_mes_€"].astype(int)
-                    df_ventas["Venta_necesaria_€"] = df_ventas["Venta_necesaria_€"].astype(int)
+                    st.markdown("#### Suggested sales by asset")
+                    st.dataframe(df_sales, use_container_width=True)
 
                     st.markdown(
-                        f"**Venta total mínima necesaria para alcanzar exactamente los pesos objetivo (realizando también las compras necesarias):** "
-                        f"≈ **{venta_total:,.0f} €**, repartida entre los activos sobreponderados."
+                        f"**Total suggested sales:** {total_sales_amount:,.2f} €  "+
+                        "(distributed across overweight assets to move closer to targets)."
                     )
 
-                    # Tabla 1: resumen de ventas por activo (más compacta)
-                    st.markdown("##### 🧾 Resumen de ventas por activo")
-                    df_resumen_ventas = df_ventas[[
-                        "Activo",
-                        "Venta_necesaria_€",
-                        "Peso_despues_solo_compras_%",
-                        "Peso_final_%",
-                        "Peso_objetivo_%",
-                    ]].copy()
-                    # Aseguramos también 2 decimales en porcentajes del resumen
-                    for col_pct in ["Peso_despues_solo_compras_%", "Peso_final_%", "Peso_objetivo_%"]:
-                        df_resumen_ventas[col_pct] = df_resumen_ventas[col_pct].round(2)
-                    # Ventas necesarias como enteros (sin decimales)
-                    df_resumen_ventas["Venta_necesaria_€"] = df_resumen_ventas["Venta_necesaria_€"].astype(int)
-                    st.dataframe(df_resumen_ventas)
-
-                    st.caption(
-                        "Las cantidades de venta se calculan como la **venta mínima necesaria** para dejar cada activo "
-                        "en su peso objetivo, partiendo de la situación tras aplicar solo la aportación del mes. "
-                        "Las compras adicionales se financian íntegramente con esas ventas (sin aportar más dinero nuevo)."
-                    )
-
-
-    # Gestión de carteras nombradas (guardado/carga en carteras.json)
-    st.markdown("---")
-    st.markdown("### 💾 Carteras guardadas")
-
-    portfolios = load_portfolios()
-    nombres_carteras = sorted(portfolios.keys()) if isinstance(portfolios, dict) else []
-
-    col_cartera_1, col_cartera_2 = st.columns([2, 2])
-    with col_cartera_1:
-        nombre_cartera_nueva = st.text_input(
-            "Nombre para guardar esta cartera (ej. 'Cartera TR largo plazo')",
-            value="",
-        )
-    with col_cartera_2:
-        opciones_carteras = ["(ninguna)"] + nombres_carteras
-        cartera_seleccionada = st.selectbox(
-            "Cargar cartera existente",
-            options=opciones_carteras,
-        )
-
-    col_cart_save, col_cart_load = st.columns(2)
-    with col_cart_save:
-        if st.button("💾 Guardar cartera actual"):
-            if not nombre_cartera_nueva:
-                st.error("Pon un nombre para la cartera antes de guardarla.")
-            else:
-                if not isinstance(portfolios, dict):
-                    portfolios = {}
-                # Guardamos la cartera actual como lista de registros (filas)
-                portfolios[nombre_cartera_nueva] = st.session_state["cartera_df"].to_dict(orient="records")
-                save_portfolios(portfolios)
-                st.success(f"Cartera '{nombre_cartera_nueva}' guardada correctamente en '{PORTFOLIOS_FILE}'.")
-    with col_cart_load:
-        if st.button("📂 Cargar cartera seleccionada"):
-            if cartera_seleccionada == "(ninguna)":
-                st.warning("Selecciona una cartera para cargar.")
-            else:
-                datos = portfolios.get(cartera_seleccionada)
-                if not datos:
-                    st.error("No se ha podido cargar esa cartera.")
-                else:
-                    try:
-                        st.session_state["cartera_df"] = pd.DataFrame(datos)
-                        st.success(f"Cartera '{cartera_seleccionada}' cargada. Revisa/edita la tabla; los cambios se aplican automáticamente.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al reconstruir la cartera desde '{PORTFOLIOS_FILE}': {e}")
-
-
-    # --- Reset TAB 1 ---
-    st.markdown("---")
-    if st.button("🔄 Restablecer", key="reset_tab1"):
-        for key in ["cartera_df", "cartera_confirmada"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.rerun()
-
-# ============================
-# TAB 2: OBJETIVO A LARGO PLAZO
-# ============================
 with tab2:
-    st.header("Calcular aportación mensual para un objetivo futuro")
+    st.header("Compute required monthly contribution for a future goal")
 
-    # Si hay un plan pendiente de cargar, volcamos sus valores ANTES de instanciar los widgets
+    # If there is a pending long-term plan to load, apply its values
+    # to session_state BEFORE instantiating the widgets, so the UI
+    # automatically shows the stored configuration.
     pending_plan_lp = st.session_state.pop("pending_plan_lp", None)
     if pending_plan_lp:
         st.session_state["Valor actual de tu cartera invertida (€)"] = pending_plan_lp["current_total"]
@@ -1312,45 +1204,47 @@ with tab2:
 
     st.markdown(
         """
-Aquí puedes jugar a:
-- Elegir un **objetivo de patrimonio** (ej. 50.000 €),
-- Decir en cuántos años lo quieres,
-- Suponer una rentabilidad anual (ej. 6–8%),
-- Y dejar que la app te diga cuánto debes aportar:
+Use this section to design a **long-term investment plan** for a specific wealth target.
 
-- **O bien una cantidad mensual constante**, o  
-- **Una aportación que vaya creciendo (linealmente) con los años**.
+You can:
+- Choose a **future target net worth** (e.g. 50,000 €),
+- Decide **in how many years** you want to reach it,
+- Assume an **expected annual return** (e.g. 6–8%),
+- Let the app compute how much you should contribute:
 
-Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
-"""
+- Either as a **constant monthly contribution**, or  
+- As a **monthly contribution that grows linearly over time**.
+
+You can also include **additional savings you already have** outside this portfolio.
+        """
     )
 
     colA, colB = st.columns(2)
 
     with colA:
         current_total = st.number_input(
-            "Valor actual de tu cartera invertida (€)",
+            "Current invested portfolio value (€)",
             min_value=0.0,
             step=100.0,
             value=0.0,
             key="Valor actual de tu cartera invertida (€)",
         )
         extra_savings = st.number_input(
-            "Ahorros extra iniciales a considerar (cuentas, colchón, etc.) (€)",
+            "Other initial savings to include (cash, emergency fund, etc.) (€)",
             min_value=0.0,
             step=100.0,
             value=0.0,
             key="Ahorros extra iniciales a considerar (cuentas, colchón, etc.) (€)",
         )
         objetivo_final = st.number_input(
-            "Objetivo de patrimonio futuro que quieres conseguir (€)",
+            "Future wealth target you want to reach (€)",
             min_value=0.0,
             step=1000.0,
             value=50000.0,
             key="Objetivo de patrimonio futuro que quieres conseguir (€)",
         )
         years = st.number_input(
-            "Años hasta el objetivo",
+            "Years until the target date",
             min_value=1,
             max_value=60,
             step=1,
@@ -1360,7 +1254,7 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
 
     with colB:
         annual_return_input = st.number_input(
-            "Rentabilidad anual estimada (%)",
+            "Expected annual return (%)",
             min_value=0.0,
             max_value=20.0,
             step=0.5,
@@ -1370,27 +1264,33 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
         annual_return = annual_return_input / 100.0
 
         apply_tax = st.checkbox(
-            "Tener en cuenta impuestos sobre plusvalías al vender todo al final",
+            "Account for taxes on capital gains when selling everything at the end",
             value=False,
             help=(
-                "Si lo marcas, la cuota mensual se calculará para que el objetivo sea neto, "
-                "después de pagar un tipo efectivo sobre las ganancias según tramos progresivos."
+                "If enabled, the monthly contribution will be computed so that the final target is NET, "
+                "after applying a progressive tax on capital gains at the end of the horizon."
             ),
             key="Tener en cuenta impuestos sobre plusvalías al vender todo al final",
         )
 
+        # We keep the underlying option values in Spanish for backward compatibility
+        # with previously saved plans, but display them in English.
         modo = st.radio(
-            "Modo de aportación",
+            "Contribution mode",
             options=["Constante", "Creciente"],
             index=0,
-            help="Constante = mismo importe todos los meses. Creciente = empiezas con una cantidad y vas subiendo cada año.",
+            format_func=lambda x: "Constant monthly amount" if x == "Constante" else "Growing monthly amount",
+            help=(
+                "Constant = the same amount every month. "
+                "Growing = you start with one amount and it increases linearly over the years."
+            ),
             key="Modo de aportación",
         )
 
         initial_monthly = 0
         if modo == "Creciente":
             initial_monthly = st.number_input(
-                "¿Con cuánto te gustaría empezar aportando cada mes? (€)",
+                "How much would you like to contribute initially per month? (€)",
                 min_value=0,
                 step=10,
                 value=150,
@@ -1398,24 +1298,30 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
             )
 
         salary_pct_input = st.number_input(
-            "¿Qué porcentaje de tu sueldo quieres que represente la aportación mensual? (%) (opcional)",
+            "What percentage of your NET salary should the monthly contribution represent? (%) (optional)",
             min_value=0.0,
             max_value=100.0,
             step=1.0,
             value=0.0,
-            help="Por ejemplo, si quieres que la inversión mensual sea el 20% de tu sueldo, pon 20.",
+            help=(
+                "For example, if you want your monthly investment to be 20% of your net salary, "
+                "enter 20. This will allow the app to estimate a reference salary."
+            ),
             key="¿Qué porcentaje de tu sueldo quieres que represente la aportación mensual? (%) (opcional)",
         )
 
-    if st.button("🧮 Calcular plan para llegar al objetivo"):
+    if st.button("🧮 Compute plan to reach the goal"):
         if objetivo_final <= 0:
-            st.error("El objetivo debe ser mayor que 0.")
+            st.error("The target wealth must be greater than 0.")
         else:
             if modo == "Constante":
+                # ------------------------
+                # CONSTANT MONTHLY PLAN
+                # ------------------------
                 months_total = years * 12
 
                 if apply_tax:
-                    # Buscamos la aportación mensual para que el objetivo sea NETO (después de impuestos)
+                    # We search for the monthly contribution that yields the desired NET amount
                     def net_final_with_monthly(C: float):
                         C_int = int(round(C))
                         if C_int < 0:
@@ -1461,7 +1367,7 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                                 net_final = net_mid
                         mensual_necesaria = int(round(high))
 
-                    # Vuelve a simular para obtener la serie (bruta)
+                    # Re-simulate to obtain the full (gross) time series
                     final_value, series = simulate_constant_plan(
                         current_total=current_total,
                         monthly_contribution=mensual_necesaria,
@@ -1475,10 +1381,10 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                     net_final = final_value - tax
 
                 else:
-                    # Sin impuestos: usamos la función auxiliar original
+                    # No tax: use the original helper
                     mensual_necesaria = required_constant_monthly_for_goal(
                         current_total=current_total,
-                        objetivo_final=objetivo_final,
+                        objective_final=objetivo_final,
                         years=years,
                         annual_return=annual_return,
                         extra_savings=extra_savings,
@@ -1499,75 +1405,78 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
 
                 if mensual_necesaria == 0:
                     st.success(
-                        "Con lo que ya tienes y la rentabilidad asumida, "
-                        "en teoría llegarías al objetivo sin necesidad de aportar más (o con 0 €/mes)."
+                        "With your current capital and the assumed return, "
+                        "you would theoretically reach the target without needing extra monthly contributions."
                     )
                 else:
-                    st.subheader("📌 Resultado (aportación constante)")
+                    st.subheader("📌 Result (constant contribution)")
                     st.write(
-                        f"Para alcanzar **{objetivo_final:,.0f} € NETOS** en **{years} años** "
-                        f"con una rentabilidad anual del **{annual_return_input:.1f}%**, "
-                        f"deberías aportar aproximadamente **{mensual_necesaria} € al mes**, "
-                        "de forma constante."
+                        f"To reach **{objetivo_final:,.0f} € NET** in **{years} years** "
+                        f"with an expected annual return of **{annual_return_input:.1f}%**, "
+                        f"you should invest approximately **{mensual_necesaria} € per month**, "
+                        "kept constant over the whole period."
                     )
 
                 st.write(
-                    f"Patrimonio bruto estimado al final: **{final_value:,.0f} €**"
+                    f"Estimated gross portfolio value at the end: **{final_value:,.0f} €**"
                 )
                 st.write(
-                    f"Plusvalía (beneficio antes de impuestos): **{gain:,.0f} €**"
+                    f"Capital gain (before taxes): **{gain:,.0f} €**"
                 )
                 if apply_tax:
                     st.write(
-                        f"Impuestos estimados sobre plusvalías (según tramos progresivos): "
+                        "Estimated taxes on capital gains (using progressive brackets): "
                         f"**{tax:,.0f} €**"
                     )
                     st.write(
-                        f"Patrimonio neto estimado tras impuestos: **{net_final:,.0f} €**"
+                        f"Estimated NET wealth after taxes: **{net_final:,.0f} €**"
                     )
 
+                # Salary reference calculation
                 if salary_pct_input > 0 and mensual_necesaria > 0:
                     pct = salary_pct_input / 100.0
                     sueldo_bruto_anual = mensual_necesaria * 12 / pct
                     sueldo_neto_anual, ss_contrib, irpf, eff_rate = compute_salary_net(sueldo_bruto_anual)
 
-                    st.markdown("#### 💼 Sueldo de referencia para esa aportación")
+                    st.markdown("#### 💼 Reference salary for that monthly contribution")
                     st.write(
-                        f"Para que **{mensual_necesaria} € al mes** supongan aproximadamente el **{salary_pct_input:.0f}%** de tu sueldo NETO, "
-                        f"necesitarías un sueldo bruto de referencia de unos **{sueldo_bruto_anual:,.0f} € al año**, "
-                        f"que se traducirían en ~**{sueldo_neto_anual:,.0f} € netos al año** "
-                        f"después de una retención total aproximada del **{eff_rate*100:.1f}%** "
-                        f"(Seguridad Social + IRPF por tramos)."
+                        f"For **{mensual_necesaria} € per month** to represent approximately **{salary_pct_input:.0f}%** "
+                        f"of your NET salary, you would need a reference gross salary of about "
+                        f"**{sueldo_bruto_anual:,.0f} € per year**, which translates into "
+                        f"~**{sueldo_neto_anual:,.0f} € net per year** after an estimated total tax + social security "
+                        f"burden of **{eff_rate*100:.1f}%**."
                     )
 
                     st.caption(
-                        "El cálculo de neto es una aproximación: usa tramos genéricos de IRPF y una cotización de "
-                        "Seguridad Social del ~6.35%, sin tener en cuenta mínimos personales ni deducciones específicas."
+                        "This net salary estimation is approximate. It uses generic IRPF brackets and a ~6.35% "
+                        "employee Social Security contribution, without considering specific allowances or deductions."
                     )
 
-                st.markdown("#### Evolución estimada del patrimonio (antes de impuestos)")
+                st.markdown("#### Estimated portfolio evolution (gross, before taxes)")
                 df_evol = pd.DataFrame(
                     {
-                        "Año": [m / 12 for m in range(1, len(series) + 1)],
-                        "Patrimonio_estimado_€": series,
+                        "Year": [m / 12 for m in range(1, len(series) + 1)],
+                        "Estimated_portfolio_€": series,
                     }
                 )
-                st.line_chart(df_evol, x="Año", y="Patrimonio_estimado_€")
+                st.line_chart(df_evol, x="Year", y="Estimated_portfolio_€")
 
                 st.caption(
-                    "Es una simulación sencilla del **valor bruto de la cartera mes a mes**. "
-                    "No tiene en cuenta cambios de fiscalidad en el tiempo, tipos variables, ni "
-                    "la volatilidad real del mercado."
+                    "This is a simple simulation of the **gross portfolio value month by month**. "
+                    "It does not take into account market volatility, changing tax regimes, or variable returns."
                 )
 
-            else:  # Creciente
+            else:  # modo == "Creciente"
+                # ------------------------
+                # GROWING MONTHLY PLAN
+                # ------------------------
                 if initial_monthly <= 0:
-                    st.error("La aportación inicial debe ser mayor que 0.")
+                    st.error("The initial monthly contribution must be greater than 0 for a growing plan.")
                 else:
                     months_total = years * 12
 
                     if apply_tax:
-                        # Buscamos la aportación mensual final para que el objetivo sea NETO
+                        # We search for the final monthly contribution so that the NET final value hits the target
                         def net_final_with_final_monthly(F: float):
                             F_float = float(F)
                             final_val, _ = simulate_dca_ramp(
@@ -1634,7 +1543,7 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                     else:
                         final_monthly_aprox, resumen_anual = required_growing_monthlies_for_goal(
                             current_total=current_total,
-                            objetivo_final=objetivo_final,
+                            objective_final=objetivo_final,
                             years=years,
                             annual_return=annual_return,
                             initial_monthly=initial_monthly,
@@ -1654,7 +1563,7 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                         tax = 0.0
                         net_final = final_value_grow
 
-                    # Construimos resumen anual
+                    # Build an annual summary table
                     resumen_anual = []
                     for año in range(1, years + 1):
                         start_idx = (año - 1) * 12
@@ -1685,32 +1594,32 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                             }
                         )
 
-                    st.subheader("📌 Resultado (aportación creciente)")
+                    st.subheader("📌 Result (growing contributions)")
                     st.write(
-                        f"Para alcanzar aproximadamente **{objetivo_final:,.0f} € NETOS** en **{years} años** "
-                        f"con una rentabilidad anual del **{annual_return_input:.1f}%** y aportaciones crecientes, "
-                        f"deberías empezar aportando **{initial_monthly} € al mes** y terminar aportando "
-                        f"aproximadamente **{final_monthly_aprox} € al mes**."
+                        f"To reach approximately **{objetivo_final:,.0f} € NET** in **{years} years** "
+                        f"with an expected annual return of **{annual_return_input:.1f}%** and growing contributions, "
+                        f"you should start contributing **{initial_monthly} € per month** and end up contributing "
+                        f"around **{final_monthly_aprox} € per month**."
                     )
 
                     df_resumen = pd.DataFrame(resumen_anual)
                     df_resumen = df_resumen.rename(
                         columns={
-                            "year": "Año",
-                            "start": "Inicio_€/mes",
-                            "end": "Fin_€/mes",
-                            "avg": "Media_€/mes",
+                            "year": "Year",
+                            "start": "Start_€/month",
+                            "end": "End_€/month",
+                            "avg": "Average_€/month",
                         }
                     )
 
-                    # Si el usuario ha indicado un porcentaje de sueldo, añadimos columnas de sueldo BRUTO y NETO necesarios
+                    # If the user specified a salary percentage, add derived gross and net salary columns
                     if salary_pct_input > 0:
                         pct = salary_pct_input / 100.0
                         sueldos_brutos = []
                         sueldos_netos = []
                         retenciones_totales = []
                         for _, fila in df_resumen.iterrows():
-                            media_mes = fila["Media_€/mes"]
+                            media_mes = fila["Average_€/month"]
                             if media_mes <= 0:
                                 sueldo_bruto_anual = 0.0
                                 sueldo_neto_anual = 0.0
@@ -1723,60 +1632,60 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                             sueldos_netos.append(round(sueldo_neto_anual))
                             retenciones_totales.append(round(ret_total_pct, 1))
 
-                        df_resumen["Sueldo_bruto_necesario_€/año"] = sueldos_brutos
-                        df_resumen["Sueldo_neto_estimado_€/año"] = sueldos_netos
-                        df_resumen["Retención_total_aprox_%"] = retenciones_totales
+                        df_resumen["Required_gross_salary_€/year"] = sueldos_brutos
+                        df_resumen["Estimated_net_salary_€/year"] = sueldos_netos
+                        df_resumen["Approx_total_withholding_%"] = retenciones_totales
 
-                    st.markdown("#### Aportaciones aproximadas por año")
+                    st.markdown("#### Approximate contributions per year")
                     st.dataframe(df_resumen)
 
                     st.markdown(
-                        "Cada fila representa un año del plan: \n"
-                        "- **Inicio_€/mes**: cuánto aportarías al comienzo de ese año.\n"
-                        "- **Fin_€/mes**: cuánto aportarías al final de ese año.\n"
-                        "- **Media_€/mes**: aportación mensual media aproximada durante ese año.\n"
-                        "- **Sueldo_bruto_necesario_€/año** (si has indicado un % de sueldo): sueldo aproximado para que esa media mensual represente ese porcentaje."
+                        "Each row represents one year of the plan:\n"
+                        "- **Start_€/month**: monthly contribution at the beginning of that year.\n"
+                        "- **End_€/month**: monthly contribution at the end of that year.\n"
+                        "- **Average_€/month**: approximate average monthly contribution during that year.\n"
+                        "- **Required_gross_salary_€/year** (if a salary % was provided): gross salary so that the average monthly contribution represents that percentage."
                     )
 
                     st.write(
-                        f"Patrimonio bruto estimado al final: **{final_value_grow:,.0f} €**"
+                        f"Estimated gross portfolio value at the end: **{final_value_grow:,.0f} €**"
                     )
                     st.write(
-                        f"Plusvalía (beneficio antes de impuestos): **{gain:,.0f} €**"
+                        f"Capital gain (before taxes): **{gain:,.0f} €**"
                     )
                     if apply_tax:
                         st.write(
-                            f"Impuestos estimados sobre plusvalías (según tramos progresivos): "
+                            "Estimated taxes on capital gains (using progressive brackets): "
                             f"**{tax:,.0f} €**"
                         )
                         st.write(
-                            f"Patrimonio neto estimado tras impuestos: **{net_final:,.0f} €**"
+                            f"Estimated NET wealth after taxes: **{net_final:,.0f} €**"
                         )
 
-                    st.markdown("#### Evolución estimada del patrimonio (antes de impuestos)")
+                    st.markdown("#### Estimated portfolio evolution (gross, before taxes)")
                     df_evol_grow = pd.DataFrame(
                         {
-                            "Año": [m / 12 for m in range(1, len(series_grow) + 1)],
-                            "Patrimonio_estimado_€": series_grow,
+                            "Year": [m / 12 for m in range(1, len(series_grow) + 1)],
+                            "Estimated_portfolio_€": series_grow,
                         }
                     )
-                    st.line_chart(df_evol_grow, x="Año", y="Patrimonio_estimado_€")
+                    st.line_chart(df_evol_grow, x="Year", y="Estimated_portfolio_€")
 
                     st.caption(
-                        "Es una simulación sencilla del **valor bruto de la cartera mes a mes** con aportaciones crecientes. "
-                        "No tiene en cuenta cambios de fiscalidad en el tiempo, tipos variables, ni "
-                        "la volatilidad real del mercado."
+                        "This is a simple simulation of the **gross portfolio value month by month** with growing contributions. "
+                        "It does not model real market volatility, changing tax regimes, or variable returns."
                     )
 
                     st.caption(
-                        "El crecimiento es lineal entre la aportación inicial y la final. "
-                        "No tiene en cuenta escalones salariales reales ni cambios de sueldo, "
-                        "pero sirve como referencia para visualizar la tendencia."
+                        "The monthly contribution increases linearly between the initial and final amounts. "
+                        "It does not capture real-world salary jumps or changes, but it helps visualize the trend."
                     )
 
-    # Gestión de presets / planes para objetivo a largo plazo
+    # --------------------------
+    # Saved long-term plans
+    # --------------------------
     st.markdown("---")
-    st.markdown("### 💾 Planes guardados (largo plazo)")
+    st.markdown("### 💾 Saved long-term plans")
 
     plans = load_plans()
     planes_lp = plans.get("largo_plazo", {})
@@ -1784,21 +1693,21 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
     col_plan_lp_1, col_plan_lp_2 = st.columns([2, 2])
     with col_plan_lp_1:
         nombre_plan_lp = st.text_input(
-            "Nombre para guardar este plan",
+            "Name for this long-term plan",
             value="",
         )
     with col_plan_lp_2:
-        opciones_planes_lp = ["(ninguno)"] + sorted(planes_lp.keys()) if isinstance(planes_lp, dict) else ["(ninguno)"]
+        opciones_planes_lp = ["(none)"] + sorted(planes_lp.keys()) if isinstance(planes_lp, dict) else ["(none)"]
         plan_lp_seleccionado = st.selectbox(
-            "Cargar plan existente",
+            "Load an existing plan",
             options=opciones_planes_lp,
         )
 
     col_plan_lp_save, col_plan_lp_load = st.columns(2)
     with col_plan_lp_save:
-        if st.button("💾 Guardar plan de largo plazo"):
+        if st.button("💾 Save long-term plan"):
             if not nombre_plan_lp:
-                st.error("Pon un nombre para el plan antes de guardarlo.")
+                st.error("Please enter a name for the plan before saving.")
             else:
                 if not isinstance(plans.get("largo_plazo"), dict):
                     plans["largo_plazo"] = {}
@@ -1814,23 +1723,24 @@ Además puedes incluir **ahorros extra** que ya tengas fuera de la cartera.
                     "salary_pct_input": salary_pct_input,
                 }
                 save_plans(plans)
-                st.success(f"Plan '{nombre_plan_lp}' guardado correctamente.")
+                st.success(f"Plan '{nombre_plan_lp}' saved successfully.")
     with col_plan_lp_load:
-        if st.button("📂 Cargar plan de largo plazo"):
-            if plan_lp_seleccionado == "(ninguno)":
-                st.warning("Selecciona un plan para cargar.")
+        if st.button("📂 Load long-term plan"):
+            if plan_lp_seleccionado == "(none)":
+                st.warning("Select a plan to load.")
             else:
                 plan = planes_lp.get(plan_lp_seleccionado)
                 if not plan:
-                    st.error("No se ha podido cargar ese plan.")
+                    st.error("The selected plan could not be loaded.")
                 else:
-                    # Guardamos el plan como "pendiente" y recargamos; en el siguiente run se aplicará antes de los widgets
+                    # Store the selected plan as 'pending' and rerun;
+                    # on the next run, it will be applied to session_state before widgets are created.
                     st.session_state["pending_plan_lp"] = plan
                     st.rerun()
 
     # --- Reset TAB 2 ---
     st.markdown("---")
-    if st.button("🔄 Restablecer", key="reset_tab2"):
+    if st.button("🔄 Reset this tab", key="reset_tab2"):
         keys_lp = [
             "Valor actual de tu cartera invertida (€)",
             "Ahorros extra iniciales a considerar (cuentas, colchón, etc.) (€)",
@@ -2607,28 +2517,7 @@ del universo completo (CSV) y asignándoles un valor en euros.
                             spine.set_color(text_color)
 
                         st.pyplot(fig_sub)
-
-                    # ==========================
-                    # 6️⃣ Tabla resumen completa
-                    # ==========================
-                    st.markdown("### 6️⃣ Tabla resumen completa de la cartera")
-                    st.dataframe(
-                        portfolio_df[
-                            [
-                                "Name",
-                                "ISIN",
-                                "Type",
-                                "Region",
-                                "Country",
-                                "ETF_Provider",
-                                "ETF_Subtype",
-                                "Currency_Name",
-                                "Value_€",
-                                "Weight_%"
-                            ]
-                        ],
-                        use_container_width=True,
-                    )
+                    
 
     # --- Reset TAB 4 ---
     st.markdown("---")

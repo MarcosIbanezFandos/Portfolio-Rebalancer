@@ -105,20 +105,22 @@ def infer_region_info(isin: str, asset_type: str | None = None):
       del mundo. En ese caso devolvemos la región vacía ("").
     """
     if len(isin) < 2:
-        return "XX", "Unknown", ""
+        return "XX", "", ""
 
     code = isin[:2]
+
+    # ETFs: no country, no region from ISIN
+    if asset_type == "ETF":
+        return code, "", ""
+
+    # Stocks / others: keep mapping
     country_name = COUNTRY_MAP.get(code, f"Other ({code})")
 
-    # Para ETFs no inferimos región desde el ISIN
-    if asset_type == "ETF":
-        macro = ""
-    else:
-        macro = ""
-        for region_name, codes in REGION_GROUPS.items():
-            if code in codes:
-                macro = region_name
-                break
+    macro = ""
+    for region_name, codes in REGION_GROUPS.items():
+        if code in codes:
+            macro = region_name
+            break
 
     return code, country_name, macro
 
