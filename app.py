@@ -403,14 +403,14 @@ def required_growing_monthlies_for_goal(
 def load_universe_csv():
     """
     Carga el universo completo de activos desde el CSV generado
-    (ej: 'TradeRepublic_Activos_Completo.csv').
+    (ej: 'asset_universe.csv').
 
     El CSV debe contener al menos:
     ISIN, Name, Type, Region, Country, Country_Code, ETF_Provider,
     ETF_Subtype, Distribution, Currency_Name, Is_ADR, Page, Search_Key
     """
     try:
-        df = pd.read_csv("TradeRepublic_Activos_Completo.csv")
+        df = pd.read_csv("asset_universe.csv")
         # Normalizamos algunas columnas clave
         for col in ["ISIN", "Name", "Search_Key"]:
             if col in df.columns:
@@ -2326,7 +2326,7 @@ del universo completo (CSV) y asignándoles un valor en euros.
     universe_df = load_universe_csv()
     if universe_df.empty:
         st.error(
-            "No se ha podido cargar el universo de activos desde 'TradeRepublic_Activos_Completo.csv'. "
+            "No se ha podido cargar el universo de activos desde 'asset_universe.csv'. "
             "Asegúrate de que el fichero existe en la misma carpeta que esta app."
         )
     else:

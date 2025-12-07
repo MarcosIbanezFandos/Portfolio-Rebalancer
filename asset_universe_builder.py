@@ -6,9 +6,9 @@ import os
 
 # --- CONFIGURACIÓN DE ARCHIVOS ---
 INPUT_PDF = "Instrument_Universe_DE_en.pdf"
-OUTPUT_EXCEL = "TradeRepublic_Activos_Completo.xlsx"
-OUTPUT_CSV = "TradeRepublic_Activos_Completo.csv"
-OUTPUT_JSON = "TradeRepublic_Activos_Completo.json"
+OUTPUT_EXCEL = "asset_universe.xlsx"
+OUTPUT_CSV = "asset_universe.csv"
+OUTPUT_JSON = "asset_universe.json"
 
 # --- 1. BASES DE DATOS Y MAPAS ---
 
