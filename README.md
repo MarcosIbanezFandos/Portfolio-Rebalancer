@@ -57,31 +57,25 @@ It provides:
 
 ## Technology Stack
 
-Python
-Streamlit
-Pandas
-NumPy
-Matplotlib
-Altair
-OpenPyXL
+Python, Streamlit, Pandas, NumPy, Matplotlib, Altair, OpenPyXL.
 
 ## Repository Structure
 
-app.py                         Main application
+· `app.py`: Main Streamlit application
 
-asset_universe.csv            Unified asset universe
+· `asset_universe.csv`: Unified asset universe used for search and autocompletion
 
-asset_universe_builder.py     Universe generation tool
+· `asset_universe_builder.py`: Script to build and normalise the asset universe
 
-carteras.json                 Saved user portfolios
+· `carteras.json`: Storage for saved user portfolios
 
-planes.json                   Saved long-term plans
+· `planes.json`: Storage for saved long-term financial and housing plans
 
-activos_custom.json           User-defined custom assets
+· `activos_custom.json`: Storage for user-defined custom assets
 
-Instrument_Universe_DE_en.pdf Source reference for asset universe
+· `Instrument_Universe_DE_en.pdf`: Source reference for the constructed asset universe
 
-requirements.txt              Python dependencies
+· `requirements.txt`: Python dependencies required to run the application
 
 
 ## Installation
