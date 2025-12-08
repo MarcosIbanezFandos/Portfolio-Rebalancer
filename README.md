@@ -48,13 +48,6 @@ It provides:
 · Optionally apply capital-gains taxation  
 · Generate approximate mortgage payments
 
-### 4. Portfolio Analysis
-
-· Explore portfolio distributions  
-· Identify concentration risks  
-· Compare type-level and asset-level exposures  
-· Analyse pre- and post-rebalancing structures
-
 ## Technology Stack
 
 Python, Streamlit, Pandas, NumPy, Matplotlib, Altair, OpenPyXL.
