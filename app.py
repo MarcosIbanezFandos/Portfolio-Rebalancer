@@ -510,18 +510,16 @@ This application helps you plan and manage your investments:
 - **Portfolio rebalancing**: distribute your monthly contribution across assets to maintain target weights.  
 - **Long-term goal planning**: estimate how much you need to invest (constant or growing contributions) to reach a target wealth.  
 - **Housing plan**: plan a home down payment, extra costs, and mortgage.  
-- **Portfolio analysis**: additional analytics and summaries.
 
 Use the tabs below to navigate each module.
 """
 )
 
-tab1, tab2, tab3, tab4 = st.tabs(
+tab1, tab2, tab3 = st.tabs(
     [
         "🔁 Portfolio rebalancing",
         "🎯 Long-term goal",
         "🏠 Housing plan",
-        "📊 Portfolio analysis",
     ]
 )
 
@@ -1176,6 +1174,7 @@ with tab1:
 
                     df_sales = pd.DataFrame(rows_sales)
 
+
                     st.markdown("#### Suggested sales by asset")
                     st.dataframe(df_sales, use_container_width=True)
 
@@ -1183,6 +1182,75 @@ with tab1:
                         f"**Total suggested sales:** {total_sales_amount:,.2f} €  "+
                         "(distributed across overweight assets to move closer to targets)."
                     )
+
+    # --------------------------
+    # Saved portfolios (Tab 1)
+    # --------------------------
+    st.markdown("---")
+    st.markdown("### 💾 Saved portfolios")
+
+    portfolios = load_portfolios()
+    current_portfolio_df = ensure_portfolio_schema(
+        st.session_state.get("portfolio_df", default_data.copy())
+    )
+
+    col_p1, col_p2 = st.columns([2, 2])
+    with col_p1:
+        portfolio_name = st.text_input(
+            "Name for this portfolio",
+            value="",
+            key="portfolio_save_name",
+        )
+    with col_p2:
+        if isinstance(portfolios, dict) and portfolios:
+            portfolio_options = ["(none)"] + sorted(portfolios.keys())
+        else:
+            portfolio_options = ["(none)"]
+        portfolio_selected = st.selectbox(
+            "Load an existing portfolio",
+            options=portfolio_options,
+            key="portfolio_load_select",
+        )
+
+    col_p_save, col_p_load, col_p_delete = st.columns(3)
+
+    with col_p_save:
+        if st.button("💾 Save current portfolio", key="btn_save_portfolio"):
+            if current_portfolio_df.empty:
+                st.error("There is no portfolio to save. Add at least one asset first.")
+            elif not portfolio_name.strip():
+                st.error("Please enter a name for the portfolio before saving.")
+            else:
+                if not isinstance(portfolios, dict):
+                    portfolios = {}
+                portfolios[portfolio_name.strip()] = current_portfolio_df.to_dict(orient="records")
+                save_portfolios(portfolios)
+                st.success(f"Portfolio '{portfolio_name.strip()}' saved successfully.")
+
+    with col_p_load:
+        if st.button("📂 Load portfolio", key="btn_load_portfolio"):
+            if portfolio_selected == "(none)":
+                st.warning("Select a portfolio to load.")
+            else:
+                data = portfolios.get(portfolio_selected)
+                if not data:
+                    st.error("The selected portfolio could not be loaded.")
+                else:
+                    df_loaded = pd.DataFrame(data)
+                    st.session_state["portfolio_df"] = ensure_portfolio_schema(df_loaded)
+                    st.success(f"Portfolio '{portfolio_selected}' loaded.")
+                    st.rerun()
+
+    with col_p_delete:
+        if st.button("🗑️ Delete portfolio", key="btn_delete_portfolio"):
+            if portfolio_selected == "(none)":
+                st.warning("Select a portfolio to delete.")
+            else:
+                if portfolio_selected in portfolios:
+                    del portfolios[portfolio_selected]
+                    save_portfolios(portfolios)
+                    st.success(f"Portfolio '{portfolio_selected}' deleted.")
+                    st.rerun()
 
 with tab2:
     st.header("Compute required monthly contribution for a future goal")
@@ -1761,9 +1829,11 @@ You can also include **additional savings you already have** outside this portfo
 # TAB 3: PLAN DE VIVIENDA
 # ============================
 with tab3:
-    st.header("Plan de vivienda (ahorro para la entrada)")
+    st.header("Home purchase savings plan")
 
-    # Si hay un plan de vivienda pendiente de cargar, volcamos sus valores ANTES de instanciar los widgets
+    # If there is a pending housing plan to load, apply its values
+    # to session_state BEFORE instantiating the widgets, so the UI
+    # automatically shows the stored configuration.
     pending_plan_viv = st.session_state.pop("pending_plan_viv", None)
     if pending_plan_viv:
         st.session_state["Precio estimado de la vivienda (€)"] = pending_plan_viv["house_price"]
@@ -1771,35 +1841,43 @@ with tab3:
         st.session_state["Años hasta la compra"] = pending_plan_viv["years_house"]
         st.session_state["Ahorro ya destinado a la entrada (€)"] = pending_plan_viv["ahorro_actual_entrada"]
         st.session_state["Rentabilidad anual estimada del ahorro para la entrada (%)"] = pending_plan_viv["anual_return_house_input"]
+        st.session_state["Tener en cuenta impuestos vivienda"] = pending_plan_viv.get("apply_tax_house", False)
+        st.session_state["Tipo interés hipoteca"] = pending_plan_viv.get("tipo_hipoteca_input", 3.0)
+        st.session_state["Plazo hipoteca años"] = pending_plan_viv.get("plazo_hipoteca_years", 30)
+        st.session_state["Modo de aportación vivienda"] = pending_plan_viv.get("modo_house", "Constante")
+        st.session_state["Aportación inicial vivienda"] = pending_plan_viv.get("initial_monthly_house", 0)
 
     st.markdown(
         """
-Este modo está pensado para planificar **la entrada de una vivienda**.
+Use this section to plan the **cash needed for a home purchase** (down payment + transaction costs)
+and to get an approximate view of the future mortgage.
 
-1. Indicas el precio objetivo de la vivienda y el % de entrada (por ejemplo, 20%).  
-2. Indicas los **gastos asociados** (ITP, notaría, gestoría, etc.) como porcentaje sobre el precio.  
-3. Dices cuántos años faltan hasta la compra y cuánto tienes ya ahorrado para la entrada.  
-4. Asumes una rentabilidad anual para el dinero que destines a este objetivo.  
-5. Eliges **aportación constante** o **aportación creciente**.  
-6. Opcionalmente, puedes activar el cálculo de **impuestos sobre plusvalías** al vender la hucha al final.  
-7. Además, puedes simular una **hipoteca** (tipo y plazo) para ver la cuota aproximada.
+The typical steps are:
+1. Define the **estimated purchase price** and the **down payment % required by the bank**.  
+2. Add **transaction costs** (taxes, notary, registry, fees) as a percentage of the price.  
+3. Indicate how many **years until the purchase** and how much you have already saved for the down payment.  
+4. Assume an **annual return** for the savings dedicated to this goal.  
+5. Choose whether you want a **constant monthly contribution** or a **growing monthly contribution**.  
+6. Optionally, account for **capital gains tax** when you liquidate this savings pot at the end.  
+7. Optionally, simulate a **mortgage** to see the approximate monthly instalment.
 
-La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te da una recomendación de cartera para este objetivo.
-"""
+The app will estimate **how much you need to save**, **how much to contribute each month**, and
+how this savings pot could evolve over time.
+        """
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
         house_price = st.number_input(
-            "Precio estimado de la vivienda (€)",
+            "Estimated home purchase price (€)",
             min_value=0.0,
             step=5000.0,
             value=200000.0,
             key="Precio estimado de la vivienda (€)",
         )
         entrada_pct = st.number_input(
-            "% de entrada que exige el banco (%)",
+            "Down payment required by the bank (%)",
             min_value=0.0,
             max_value=60.0,
             step=1.0,
@@ -1807,7 +1885,7 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
             key="% de entrada que exige el banco (%)",
         )
         gastos_pct = st.number_input(
-            "Gastos asociados (ITP, notaría, gestoría, etc.) sobre el precio (%)",
+            "Transaction costs (taxes, notary, registry, etc.) as % of the price",
             min_value=0.0,
             max_value=20.0,
             step=0.5,
@@ -1815,7 +1893,7 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
             key="Gastos asociados vivienda (%)",
         )
         years_house = st.number_input(
-            "Años hasta la compra",
+            "Years until the purchase",
             min_value=1,
             max_value=40,
             step=1,
@@ -1825,14 +1903,14 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
 
     with col2:
         ahorro_actual_entrada = st.number_input(
-            "Ahorro ya destinado a la entrada (€)",
+            "Savings already allocated to the down payment (€)",
             min_value=0.0,
             step=1000.0,
             value=0.0,
             key="Ahorro ya destinado a la entrada (€)",
         )
         anual_return_house_input = st.number_input(
-            "Rentabilidad anual estimada del ahorro para la entrada (%)",
+            "Expected annual return for this savings goal (%)",
             min_value=0.0,
             max_value=15.0,
             step=0.5,
@@ -1842,17 +1920,17 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
         annual_return_house = anual_return_house_input / 100.0
 
         apply_tax_house = st.checkbox(
-            "Tener en cuenta impuestos sobre plusvalías al vender la hucha al final",
+            "Account for taxes on capital gains when liquidating this savings pot at the end",
             value=False,
             help=(
-                "Si lo marcas, la cuota mensual se calculará para que el efectivo objetivo sea NETO, "
-                "después de pagar impuestos sobre las plusvalías con tramos progresivos."
+                "If enabled, the monthly contribution will be computed so that the target cash amount is NET, "
+                "after paying estimated taxes on capital gains (using progressive brackets)."
             ),
             key="Tener en cuenta impuestos vivienda",
         )
 
         tipo_hipoteca_input = st.number_input(
-            "Tipo de interés anual aproximado de la hipoteca (%)",
+            "Approximate annual mortgage interest rate (%)",
             min_value=0.0,
             max_value=10.0,
             step=0.1,
@@ -1860,7 +1938,7 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
             key="Tipo interés hipoteca",
         )
         plazo_hipoteca_years = st.number_input(
-            "Plazo de la hipoteca (años)",
+            "Mortgage term (years)",
             min_value=1,
             max_value=40,
             step=1,
@@ -1868,660 +1946,460 @@ La app te indica cuánto ahorrar, cuánto aportar al mes, en cuánto tiempo y te
             key="Plazo hipoteca años",
         )
 
-    # --- Elegir modo de aportación (constante/creciente) para la entrada
+    # --- Saving mode for the down payment ---
     modo_house = st.radio(
-        "Modo de aportación para la entrada",
+        "Saving mode for the down payment",
         options=["Constante", "Creciente"],
         index=0,
-        help="Constante = mismo importe todos los meses. Creciente = empiezas con una cantidad y vas subiendo cada año.",
+        help=(
+            "Constant = the same amount every month. "
+            "Growing = you start with one amount and gradually increase contributions over time."
+        ),
         key="Modo de aportación vivienda",
     )
 
     initial_monthly_house = 0
     if modo_house == "Creciente":
         initial_monthly_house = st.number_input(
-            "¿Con cuánto te gustaría empezar aportando cada mes para la entrada? (€)",
+            "Initial monthly contribution for the down payment (€)",
             min_value=0,
             step=50,
             value=300,
             key="Aportación inicial vivienda",
         )
 
+    # --- Target down payment & required savings ---
     entrada_objetivo = house_price * entrada_pct / 100.0
     gastos_totales = house_price * gastos_pct / 100.0
     objetivo_total_efectivo = entrada_objetivo + gastos_totales
     restante_necesario = max(0.0, objetivo_total_efectivo - ahorro_actual_entrada)
 
     st.markdown(
-        f"Entrada objetivo: **{entrada_objetivo:,.0f} €** (~{entrada_pct:.0f}% de {house_price:,.0f} €)."
+        f"**Target down payment:** {entrada_objetivo:,.0f} € "
+        f"(~{entrada_pct:.0f}% of {house_price:,.0f} €)."
     )
     st.markdown(
-        f"Gastos asociados estimados: **{gastos_totales:,.0f} €** (~{gastos_pct:.1f}% sobre el precio)."
+        f"**Estimated transaction costs:** {gastos_totales:,.0f} € "
+        f"(~{gastos_pct:.1f}% of the purchase price)."
     )
     st.markdown(
-        f"Total de efectivo objetivo (entrada + gastos): **{objetivo_total_efectivo:,.0f} €**."
+        f"**Total cash needed at purchase (down payment + costs):** {objetivo_total_efectivo:,.0f} €."
     )
     st.markdown(
-        f"De ese total, te faltan por ahorrar aproximadamente **{restante_necesario:,.0f} €**."
+        f"Based on your current savings, you still need to accumulate approximately "
+        f"**{restante_necesario:,.0f} €**."
     )
 
-    # Simulación rápida de hipoteca
+    # --- Simple mortgage simulation ---
     hipoteca_principal = max(0.0, house_price - entrada_objetivo)
     if hipoteca_principal > 0 and tipo_hipoteca_input >= 0 and plazo_hipoteca_years > 0:
         r_mensual = (tipo_hipoteca_input / 100.0) / 12.0
         n_meses_hipoteca = int(plazo_hipoteca_years * 12)
         if r_mensual > 0:
-            cuota_mensual_hipoteca = hipoteca_principal * r_mensual * (1 + r_mensual) ** n_meses_hipoteca / (
-                (1 + r_mensual) ** n_meses_hipoteca - 1
+            cuota_mensual_hipoteca = (
+                hipoteca_principal
+                * r_mensual
+                * (1 + r_mensual) ** n_meses_hipoteca
+                / ((1 + r_mensual) ** n_meses_hipoteca - 1)
             )
         else:
             cuota_mensual_hipoteca = hipoteca_principal / n_meses_hipoteca
+
         st.markdown(
-            f"💳 Hipoteca simulada: principal aproximado **{hipoteca_principal:,.0f} €**, "
-            f"cuota mensual estimada **{cuota_mensual_hipoteca:,.0f} €** a {plazo_hipoteca_years:.0f} años "
-            f"con un tipo del {tipo_hipoteca_input:.1f}%."
+            f"💳 **Mortgage simulation**: principal ~**{hipoteca_principal:,.0f} €**, "
+            f"estimated monthly instalment **{cuota_mensual_hipoteca:,.0f} €** over "
+            f"{plazo_hipoteca_years:.0f} years at **{tipo_hipoteca_input:.1f}%** annual interest."
         )
 
-    if st.button("🏠 Calcular plan de ahorro para la entrada"):
+    # --- Compute savings plan ---
+    if st.button("🏠 Compute savings plan for the down payment"):
         if house_price <= 0 or entrada_pct <= 0:
-            st.error("Introduce un precio de vivienda y un porcentaje de entrada mayores que 0.")
+            st.error("Please enter a strictly positive home price and down payment percentage.")
         elif years_house <= 0:
-            st.error("Los años hasta la compra deben ser mayores que 0.")
+            st.error("Years until purchase must be greater than 0.")
         elif restante_necesario <= 0:
             st.success(
-                "Con lo que ya tienes ahorrado para la entrada, en principio llegarías al objetivo sin necesidad de aportar más."
+                "With your current down-payment savings, you would theoretically reach the target without "
+                "needing additional monthly contributions."
             )
         elif modo_house == "Creciente" and initial_monthly_house <= 0:
-            st.error("La aportación inicial para la entrada debe ser mayor que 0 si eliges modo creciente.")
+            st.error("The initial monthly contribution must be greater than 0 for a growing plan.")
         else:
-            months_house = int(years_house) * 12
+            months_total = years_house * 12
 
             if modo_house == "Constante":
-                # === MODO CONSTANTE ===
+                # ------------------------
+                # CONSTANT MONTHLY SAVINGS
+                # ------------------------
                 if apply_tax_house:
-                    # Buscamos la aportación mensual para que el objetivo total (entrada + gastos) sea NETO tras impuestos
-                    def net_final_house_with_monthly(C: float):
+                    # Search for the monthly contribution such that NET final value meets the target
+                    def net_final_with_monthly(C: float):
                         C_int = int(round(C))
                         if C_int < 0:
                             C_int = 0
-                        final_val_sim, _ = simulate_constant_plan(
+                        final_value_sim, _ = simulate_constant_plan(
                             current_total=ahorro_actual_entrada,
                             monthly_contribution=C_int,
-                            years=int(years_house),
+                            years=years_house,
                             annual_return=annual_return_house,
                             extra_savings=0.0,
                         )
-                        principal_total_sim = ahorro_actual_entrada + C_int * months_house
-                        gain_sim = max(0.0, final_val_sim - principal_total_sim)
+                        principal_total_sim = ahorro_actual_entrada + C_int * months_total
+                        gain_sim = max(0.0, final_value_sim - principal_total_sim)
                         tax_sim = compute_progressive_tax(gain_sim)
-                        net_final_sim = final_val_sim - tax_sim
-                        return net_final_sim, final_val_sim, gain_sim, tax_sim
+                        net_final_sim = final_value_sim - tax_sim
+                        return net_final_sim, final_value_sim, gain_sim, tax_sim
 
-                    net0, _, _, _ = net_final_house_with_monthly(0.0)
+                    net0, _, _, _ = net_final_with_monthly(0.0)
                     if net0 >= objetivo_total_efectivo:
-                        mensual_entrada = 0
-                        final_entrada = ahorro_actual_entrada
-                        principal_total_entrada = ahorro_actual_entrada
-                        gain_entrada = 0.0
-                        tax_entrada = 0.0
-                        net_final_entrada = final_entrada
-                        series_entrada = [final_entrada] * months_house
+                        mensual_necesaria = 0
+                        final_value = ahorro_actual_entrada
+                        gain = 0.0
+                        tax = 0.0
+                        net_final = final_value
+                        series = [final_value] * months_total
                     else:
                         low = 0.0
-                        high = max(objetivo_total_efectivo / max(months_house, 1) * 3, 5000.0)
-                        final_entrada = 0.0
-                        gain_entrada = 0.0
-                        tax_entrada = 0.0
-                        net_final_entrada = 0.0
+                        high = max(objetivo_total_efectivo / max(months_total, 1) * 3, 5000.0)
+                        final_value = 0.0
+                        gain = 0.0
+                        tax = 0.0
+                        net_final = 0.0
                         for _ in range(40):
-                            mid = (low + high) / 2
-                            net_mid, final_mid, gain_mid, tax_mid = net_final_house_with_monthly(mid)
+                            mid = (low + high) / 2.0
+                            net_mid, final_mid, gain_mid, tax_mid = net_final_with_monthly(mid)
                             if net_mid < objetivo_total_efectivo:
                                 low = mid
                             else:
                                 high = mid
-                                final_entrada = final_mid
-                                gain_entrada = gain_mid
-                                tax_entrada = tax_mid
-                                net_final_entrada = net_mid
-                        mensual_entrada = int(round(high))
-                        final_entrada, series_entrada = simulate_constant_plan(
-                            current_total=ahorro_actual_entrada,
-                            monthly_contribution=mensual_entrada,
-                            years=int(years_house),
-                            annual_return=annual_return_house,
-                            extra_savings=0.0,
-                        )
-                        principal_total_entrada = ahorro_actual_entrada + mensual_entrada * months_house
-                        gain_entrada = max(0.0, final_entrada - principal_total_entrada)
-                        tax_entrada = compute_progressive_tax(gain_entrada)
-                        net_final_entrada = final_entrada - tax_entrada
-                else:
-                    # Sin impuestos: objetivo total bruto (entrada + gastos)
-                    mensual_entrada = required_constant_monthly_for_goal(
+                                final_value = final_mid
+                                gain = gain_mid
+                                tax = tax_mid
+                                net_final = net_mid
+                        mensual_necesaria = int(round(high))
+
+                    # Re-simulate to obtain the full (gross) time series
+                    final_value, series = simulate_constant_plan(
                         current_total=ahorro_actual_entrada,
-                        objetivo_final=objetivo_total_efectivo,
-                        years=int(years_house),
+                        monthly_contribution=mensual_necesaria,
+                        years=years_house,
+                        annual_return=annual_return_house,
+                        extra_savings=0.0,
+                    )
+                    principal_total = ahorro_actual_entrada + mensual_necesaria * months_total
+                    gain = max(0.0, final_value - principal_total)
+                    tax = compute_progressive_tax(gain)
+                    net_final = final_value - tax
+
+                else:
+                    # No tax: use the helper without tax
+                    mensual_necesaria = required_constant_monthly_for_goal(
+                        current_total=ahorro_actual_entrada,
+                        objective_final=objetivo_total_efectivo,
+                        years=years_house,
                         annual_return=annual_return_house,
                         extra_savings=0.0,
                         tax_rate=0.0,
                     )
-                    final_entrada, series_entrada = simulate_constant_plan(
+                    final_value, series = simulate_constant_plan(
                         current_total=ahorro_actual_entrada,
-                        monthly_contribution=mensual_entrada,
-                        years=int(years_house),
+                        monthly_contribution=mensual_necesaria,
+                        years=years_house,
                         annual_return=annual_return_house,
                         extra_savings=0.0,
                     )
-                    principal_total_entrada = ahorro_actual_entrada + mensual_entrada * months_house
-                    gain_entrada = max(0.0, final_entrada - principal_total_entrada)
-                    tax_entrada = 0.0
-                    net_final_entrada = final_entrada
+                    principal_total = ahorro_actual_entrada + mensual_necesaria * months_total
+                    gain = max(0.0, final_value - principal_total)
+                    tax = 0.0
+                    net_final = final_value
 
-                st.subheader("📌 Plan de ahorro para la entrada (aportación constante)")
-                objetivo_texto = "NETOS" if apply_tax_house else "brutos"
-                st.write(
-                    f"Para llegar a un efectivo total de **{objetivo_total_efectivo:,.0f} € {objetivo_texto}** "
-                    f"(entrada + gastos) en **{int(years_house)} años**, "
-                    f"con una rentabilidad anual estimada del **{anual_return_house_input:.1f}%**, "
-                    f"deberías ahorrar/invertir aproximadamente **{mensual_entrada} € al mes** dedicados a este objetivo."
-                )
+                # ---- Output for constant plan ----
+                if mensual_necesaria == 0:
+                    st.success(
+                        "With your current savings and the assumed return, "
+                        "you would theoretically reach the target without needing extra monthly contributions."
+                    )
+                else:
+                    st.subheader("📌 Result (constant monthly savings)")
+                    st.write(
+                        f"To reach **{objetivo_total_efectivo:,.0f} € NET** in **{years_house} years** "
+                        f"with an expected annual return of **{anual_return_house_input:.1f}%**, "
+                        f"you should save approximately **{mensual_necesaria} € per month**, "
+                        "kept constant over the whole period."
+                    )
 
                 st.write(
-                    f"Patrimonio bruto estimado en la hucha al final: **{final_entrada:,.0f} €**"
+                    f"Estimated gross value of the savings pot at the end: **{final_value:,.0f} €**"
                 )
                 st.write(
-                    f"Aportaciones totales realizadas: **{principal_total_entrada:,.0f} €**"
-                )
-                st.write(
-                    f"Plusvalía estimada (beneficio antes de impuestos): **{gain_entrada:,.0f} €**"
+                    f"Capital gain (before taxes): **{gain:,.0f} €**"
                 )
                 if apply_tax_house:
                     st.write(
-                        f"Impuestos estimados sobre plusvalías (según tramos progresivos): **{tax_entrada:,.0f} €**"
+                        "Estimated taxes on capital gains (using progressive brackets): "
+                        f"**{tax:,.0f} €**"
                     )
                     st.write(
-                        f"Efectivo neto estimado tras impuestos: **{net_final_entrada:,.0f} €**"
+                        f"Estimated NET cash after taxes: **{net_final:,.0f} €**"
                     )
 
-                st.markdown("#### Evolución estimada del ahorro para la entrada")
-                df_entrada = pd.DataFrame(
+                st.markdown("#### Estimated evolution of the savings pot (gross, before taxes)")
+                df_evol_house = pd.DataFrame(
                     {
-                        "Año": [m / 12 for m in range(1, len(series_entrada) + 1)],
-                        "Ahorro_estimado_€": series_entrada,
+                        "Year": [m / 12 for m in range(1, len(series) + 1)],
+                        "Savings_pot_€": series,
                     }
                 )
-                st.line_chart(df_entrada, x="Año", y="Ahorro_estimado_€")
+                st.line_chart(df_evol_house, x="Year", y="Savings_pot_€")
 
                 st.caption(
-                    "Es una simulación sencilla del crecimiento de la 'hucha' para la entrada, "
-                    "suponiendo aportaciones constantes y una rentabilidad media estable."
+                    "This is a simple simulation of the **gross value of the savings pot month by month**. "
+                    "It does not take into account market volatility, changes in tax rules, or variable returns."
                 )
 
             else:
-                # === MODO CRECIENTE ===
-                if apply_tax_house:
-                    # Buscamos la aportación final mensual para que el efectivo total sea NETO tras impuestos
-                    def net_final_house_with_final_monthly(F: float):
-                        F_float = float(F)
-                        final_val_sim, _ = simulate_dca_ramp(
-                            initial_monthly=initial_monthly_house,
-                            final_monthly=F_float,
-                            years=int(years_house),
-                            annual_return=annual_return_house,
-                            initial_value=ahorro_actual_entrada,
-                        )
-                        contrib_total_sim = months_house * (initial_monthly_house + F_float) / 2.0
-                        principal_total_sim = ahorro_actual_entrada + contrib_total_sim
-                        gain_sim = max(0.0, final_val_sim - principal_total_sim)
-                        tax_sim = compute_progressive_tax(gain_sim)
-                        net_final_sim = final_val_sim - tax_sim
-                        return net_final_sim, final_val_sim, gain_sim, tax_sim
-
-                    net0, _, _, _ = net_final_house_with_final_monthly(initial_monthly_house)
-                    if net0 >= objetivo_total_efectivo:
-                        final_monthly_house = initial_monthly_house
-                        final_entrada_grow, series_entrada_grow = simulate_dca_ramp(
-                            initial_monthly=initial_monthly_house,
-                            final_monthly=final_monthly_house,
-                            years=int(years_house),
-                            annual_return=annual_return_house,
-                            initial_value=ahorro_actual_entrada,
-                        )
-                        contrib_total = months_house * (initial_monthly_house + final_monthly_house) / 2.0
-                        principal_total_entrada = ahorro_actual_entrada + contrib_total
-                        gain_entrada = max(0.0, final_entrada_grow - principal_total_entrada)
-                        tax_entrada = compute_progressive_tax(gain_entrada)
-                        net_final_entrada = final_entrada_grow - tax_entrada
-                    else:
-                        low = initial_monthly_house
-                        high = max(initial_monthly_house * 3, 5000.0)
-                        final_entrada_grow = 0.0
-                        gain_entrada = 0.0
-                        tax_entrada = 0.0
-                        net_final_entrada = 0.0
-                        series_entrada_grow = []
-                        for _ in range(40):
-                            mid = (low + high) / 2
-                            net_mid, final_mid, gain_mid, tax_mid = net_final_house_with_final_monthly(mid)
-                            if net_mid < objetivo_total_efectivo:
-                                low = mid
-                            else:
-                                high = mid
-                                final_entrada_grow = final_mid
-                                gain_entrada = gain_mid
-                                tax_entrada = tax_mid
-                                net_final_entrada = net_mid
-                        final_monthly_house = int(round(high))
-                        final_entrada_grow, series_entrada_grow = simulate_dca_ramp(
-                            initial_monthly=initial_monthly_house,
-                            final_monthly=final_monthly_house,
-                            years=int(years_house),
-                            annual_return=annual_return_house,
-                            initial_value=ahorro_actual_entrada,
-                        )
-                        contrib_total = months_house * (initial_monthly_house + final_monthly_house) / 2.0
-                        principal_total_entrada = ahorro_actual_entrada + contrib_total
-                        gain_entrada = max(0.0, final_entrada_grow - principal_total_entrada)
-                        tax_entrada = compute_progressive_tax(gain_entrada)
-                        net_final_entrada = final_entrada_grow - tax_entrada
+                # ------------------------
+                # GROWING MONTHLY SAVINGS
+                # ------------------------
+                if initial_monthly_house <= 0:
+                    st.error("The initial monthly contribution must be greater than 0 for a growing plan.")
                 else:
-                    # Sin impuestos: objetivo total bruto
-                    final_monthly_house, _ = required_growing_monthlies_for_goal(
-                        current_total=ahorro_actual_entrada,
-                        objetivo_final=objetivo_total_efectivo,
-                        years=int(years_house),
-                        annual_return=annual_return_house,
-                        initial_monthly=initial_monthly_house,
-                        extra_savings=0.0,
-                        tax_rate=0.0,
-                    )
-                    final_entrada_grow, series_entrada_grow = simulate_dca_ramp(
-                        initial_monthly=initial_monthly_house,
-                        final_monthly=final_monthly_house,
-                        years=int(years_house),
-                        annual_return=annual_return_house,
-                        initial_value=ahorro_actual_entrada,
-                    )
-                    contrib_total = months_house * (initial_monthly_house + final_monthly_house) / 2.0
-                    principal_total_entrada = ahorro_actual_entrada + contrib_total
-                    gain_entrada = max(0.0, final_entrada_grow - principal_total_entrada)
-                    tax_entrada = 0.0
-                    net_final_entrada = final_entrada_grow
+                    if apply_tax_house:
+                        # Search for final monthly contribution so that NET final value meets the target
+                        def net_final_with_final_monthly(F: float):
+                            F_float = float(F)
+                            final_val, _ = simulate_dca_ramp(
+                                initial_monthly=initial_monthly_house,
+                                final_monthly=F_float,
+                                years=years_house,
+                                annual_return=annual_return_house,
+                                initial_value=ahorro_actual_entrada,
+                            )
+                            contrib_total = months_total * (initial_monthly_house + F_float) / 2.0
+                            principal_total_sim = ahorro_actual_entrada + contrib_total
+                            gain_sim = max(0.0, final_val - principal_total_sim)
+                            tax_sim = compute_progressive_tax(gain_sim)
+                            net_final_sim = final_val - tax_sim
+                            return net_final_sim, final_val, gain_sim, tax_sim
 
-                # Construimos resumen anual de aportaciones
-                resumen_anual_house = []
-                for año in range(1, int(years_house) + 1):
-                    start_idx = (año - 1) * 12
-                    end_idx = año * 12 - 1
-                    if months_house > 1:
-                        start_month = int(
-                            round(
-                                initial_monthly_house
-                                + (final_monthly_house - initial_monthly_house) * (start_idx / (months_house - 1))
+                        net0, _, _, _ = net_final_with_final_monthly(initial_monthly_house)
+                        if net0 >= objetivo_total_efectivo:
+                            final_monthly_aprox = initial_monthly_house
+                            final_value_grow, series_grow = simulate_dca_ramp(
+                                initial_monthly=initial_monthly_house,
+                                final_monthly=final_monthly_aprox,
+                                years=years_house,
+                                annual_return=annual_return_house,
+                                initial_value=ahorro_actual_entrada,
                             )
-                        )
-                        end_month = int(
-                            round(
-                                initial_monthly_house
-                                + (final_monthly_house - initial_monthly_house) * (end_idx / (months_house - 1))
+                            contrib_total = months_total * (initial_monthly_house + final_monthly_aprox) / 2.0
+                            principal_total = ahorro_actual_entrada + contrib_total
+                            gain = max(0.0, final_value_grow - principal_total)
+                            tax = compute_progressive_tax(gain)
+                            net_final = final_value_grow - tax
+                        else:
+                            low = initial_monthly_house
+                            high = max(initial_monthly_house * 3.0, 5000.0)
+                            final_value_grow = 0.0
+                            gain = 0.0
+                            tax = 0.0
+                            net_final = 0.0
+                            series_grow = []
+                            for _ in range(40):
+                                mid = (low + high) / 2.0
+                                net_mid, final_mid, gain_mid, tax_mid = net_final_with_final_monthly(mid)
+                                if net_mid < objetivo_total_efectivo:
+                                    low = mid
+                                else:
+                                    high = mid
+                                    final_value_grow = final_mid
+                                    gain = gain_mid
+                                    tax = tax_mid
+                                    net_final = net_mid
+                            final_monthly_aprox = int(round(high))
+                            final_value_grow, series_grow = simulate_dca_ramp(
+                                initial_monthly=initial_monthly_house,
+                                final_monthly=final_monthly_aprox,
+                                years=years_house,
+                                annual_return=annual_return_house,
+                                initial_value=ahorro_actual_entrada,
                             )
-                        )
+                            contrib_total = months_total * (initial_monthly_house + final_monthly_aprox) / 2.0
+                            principal_total = ahorro_actual_entrada + contrib_total
+                            gain = max(0.0, final_value_grow - principal_total)
+                            tax = compute_progressive_tax(gain)
+                            net_final = final_value_grow - tax
                     else:
-                        start_month = final_monthly_house
-                        end_month = final_monthly_house
-                    avg_month = int(round((start_month + end_month) / 2))
-                    resumen_anual_house.append(
+                        final_monthly_aprox, _ = required_growing_monthlies_for_goal(
+                            current_total=ahorro_actual_entrada,
+                            objective_final=objetivo_total_efectivo,
+                            years=years_house,
+                            annual_return=annual_return_house,
+                            initial_monthly=initial_monthly_house,
+                            extra_savings=0.0,
+                            tax_rate=0.0,
+                        )
+                        final_monthly_aprox = int(round(final_monthly_aprox))
+                        final_value_grow, series_grow = simulate_dca_ramp(
+                            initial_monthly=initial_monthly_house,
+                            final_monthly=final_monthly_aprox,
+                            years=years_house,
+                            annual_return=annual_return_house,
+                            initial_value=ahorro_actual_entrada,
+                        )
+                        contrib_total = months_total * (initial_monthly_house + final_monthly_aprox) / 2.0
+                        principal_total = ahorro_actual_entrada + contrib_total
+                        gain = max(0.0, final_value_grow - principal_total)
+                        tax = 0.0
+                        net_final = final_value_grow
+
+                    # Build an annual summary table (similar to Tab 2)
+                    resumen_anual_house = []
+                    for year in range(1, years_house + 1):
+                        start_idx = (year - 1) * 12
+                        end_idx = year * 12 - 1
+                        if months_total > 1:
+                            start_month = int(
+                                round(
+                                    initial_monthly_house
+                                    + (final_monthly_aprox - initial_monthly_house) * (start_idx / (months_total - 1))
+                                )
+                            )
+                            end_month = int(
+                                round(
+                                    initial_monthly_house
+                                    + (final_monthly_aprox - initial_monthly_house) * (end_idx / (months_total - 1))
+                                )
+                            )
+                        else:
+                            start_month = final_monthly_aprox
+                            end_month = final_monthly_aprox
+                        avg_month = int(round((start_month + end_month) / 2))
+                        resumen_anual_house.append(
+                            {
+                                "Year": year,
+                                "Start_€/month": start_month,
+                                "End_€/month": end_month,
+                                "Average_€/month": avg_month,
+                            }
+                        )
+
+                    st.subheader("📌 Result (growing monthly savings)")
+                    st.write(
+                        f"To reach approximately **{objetivo_total_efectivo:,.0f} € NET** in **{years_house} years** "
+                        f"with an expected annual return of **{anual_return_house_input:.1f}%** and growing contributions, "
+                        f"you should start saving **{initial_monthly_house} € per month** and end up saving "
+                        f"around **{final_monthly_aprox} € per month**."
+                    )
+
+                    df_resumen_house = pd.DataFrame(resumen_anual_house)
+                    st.markdown("#### Approximate monthly savings per year")
+                    st.dataframe(df_resumen_house)
+
+                    st.write(
+                        f"Estimated gross value of the savings pot at the end: **{final_value_grow:,.0f} €**"
+                    )
+                    st.write(
+                        f"Capital gain (before taxes): **{gain:,.0f} €**"
+                    )
+                    if apply_tax_house:
+                        st.write(
+                            "Estimated taxes on capital gains (using progressive brackets): "
+                            f"**{tax:,.0f} €**"
+                        )
+                        st.write(
+                            f"Estimated NET cash after taxes: **{net_final:,.0f} €**"
+                        )
+
+                    st.markdown("#### Estimated evolution of the savings pot (gross, before taxes)")
+                    df_evol_house_grow = pd.DataFrame(
                         {
-                            "Año": año,
-                            "Inicio_€/mes": start_month,
-                            "Fin_€/mes": end_month,
-                            "Media_€/mes": avg_month,
+                            "Year": [m / 12 for m in range(1, len(series_grow) + 1)],
+                            "Savings_pot_€": series_grow,
                         }
                     )
+                    st.line_chart(df_evol_house_grow, x="Year", y="Savings_pot_€")
 
-                st.subheader("📌 Plan de ahorro para la entrada (aportación creciente)")
-                objetivo_texto = "NETOS" if apply_tax_house else "brutos"
-                st.write(
-                    f"Para llegar a un efectivo total de **{objetivo_total_efectivo:,.0f} € {objetivo_texto}** "
-                    f"(entrada + gastos) en **{int(years_house)} años**, "
-                    f"con una rentabilidad anual estimada del **{anual_return_house_input:.1f}%**, "
-                    f"deberías empezar aportando **{initial_monthly_house} € al mes** y terminar aportando "
-                    f"aproximadamente **{final_monthly_house} € al mes** a este objetivo."
-                )
-
-                df_resumen_house = pd.DataFrame(resumen_anual_house)
-                st.markdown("#### Aportaciones aproximadas por año (plan entrada vivienda)")
-                st.dataframe(df_resumen_house)
-
-                st.markdown(
-                    "Cada fila representa un año del plan: \n"
-                    "- **Inicio_€/mes**: cuánto aportarías al comienzo de ese año.\n"
-                    "- **Fin_€/mes**: cuánto aportarías al final de ese año.\n"
-                    "- **Media_€/mes**: aportación mensual media aproximada durante ese año."
-                )
-
-                st.write(
-                    f"Patrimonio bruto estimado en la hucha al final: **{final_entrada_grow:,.0f} €**"
-                )
-                st.write(
-                    f"con una rentabilidad anual estimada del {anual_return_house_input:.1f}%."
-)
-
-
-# ============================
-# TAB 4: ANÁLISIS DE CARTERA
-# ============================
-with tab4:
-    st.header("Análisis de cartera a partir del universo de activos")
-
-    st.markdown(
-        """
-En esta pestaña puedes construir una **cartera de análisis** eligiendo activos
-del universo completo (CSV) y asignándoles un valor en euros.
-
-1. Busca un activo por **nombre**, **ISIN** o cualquier palabra clave.  
-2. Añádelo a tu cartera de análisis con un valor actual (€).  
-3. Cuando tengas varios activos añadidos, pulsa en **Calcular estadísticas** para ver:
-   - Distribución por **región**
-   - Distribución por **tipo de activo**
-   - Distribución por **divisa**
-   - Distribución por **subtipo de ETF** (Equity Global, EM Equity, Bond, etc.)
-   - Top 10 posiciones por peso
-   - Tabla resumen de la cartera con todos los metadatos relevantes
-"""
-    )
-
-    # Cargamos universo completo desde el CSV grande
-    universe_df = load_universe_csv()
-    if universe_df.empty:
-        st.error(
-            "No se ha podido cargar el universo de activos desde 'asset_universe.csv'. "
-            "Asegúrate de que el fichero existe en la misma carpeta que esta app."
-        )
-    else:
-        # Inicializamos la cartera de análisis en sesión
-        if "analysis_portfolio" not in st.session_state:
-            st.session_state["analysis_portfolio"] = pd.DataFrame(
-                columns=[
-                    "ISIN",
-                    "Name",
-                    "Type",
-                    "Region",
-                    "Country",
-                    "ETF_Provider",
-                    "ETF_Subtype",
-                    "Currency_Name",
-                    "Value_€",
-                ]
-            )
-
-        st.subheader("🔎 Buscar y añadir activos a la cartera de análisis")
-
-        # Desplegable con buscador interno de Streamlit (sin tabla aparte)
-        label_df = universe_df.copy()
-        label_df["Label"] = label_df.apply(
-            lambda r: f"{r.get('Name','')} ({r.get('ISIN','')}) - {r.get('Type','')} {r.get('Region','')}",
-            axis=1,
-        )
-
-        options = ["(elige un activo)"] + label_df["Label"].tolist()
-        selected_label = st.selectbox(
-            "Escribe para buscar por nombre/ISIN y selecciona el activo",
-            options=options,
-            index=0,
-            help="Empieza a escribir y usa el buscador interno del desplegable para filtrar.",
-        )
-
-        selected_row = None
-        if selected_label != "(elige un activo)":
-            selected_row = label_df.loc[label_df["Label"] == selected_label].iloc[0]
-
-        col_add1, col_add2 = st.columns(2)
-        with col_add1:
-            valor_para_anadir = st.number_input(
-                "Valor actual (€) a asignar al activo seleccionado",
-                min_value=0.0,
-                step=100.0,
-                value=0.0,
-            )
-        with col_add2:
-            if st.button("➕ Añadir activo a mi cartera de análisis"):
-                if selected_row is None:
-                    st.error("Primero selecciona un activo de la lista de resultados.")
-                elif valor_para_anadir <= 0:
-                    st.error("El valor asignado debe ser mayor que 0 €.")
-                else:
-                    # Construimos una fila con los metadatos relevantes
-                    new_row = {
-                        "ISIN": selected_row.get("ISIN", ""),
-                        "Name": selected_row.get("Name", ""),
-                        "Type": selected_row.get("Type", ""),
-                        "Region": selected_row.get("Region", ""),
-                        "Country": selected_row.get("Country", ""),
-                        "ETF_Provider": selected_row.get("ETF_Provider", ""),
-                        "ETF_Subtype": selected_row.get("ETF_Subtype", ""),
-                        "Currency_Name": selected_row.get("Currency_Name", ""),
-                        "Value_€": float(valor_para_anadir),
-                    }
-
-                    portfolio_df = st.session_state["analysis_portfolio"].copy()
-
-                    # Si ya existe ese ISIN en la cartera, sumamos al valor existente
-                    if not portfolio_df.empty and new_row["ISIN"] in portfolio_df["ISIN"].values:
-                        portfolio_df.loc[
-                            portfolio_df["ISIN"] == new_row["ISIN"], "Value_€"
-                        ] += new_row["Value_€"]
-                    else:
-                        portfolio_df = pd.concat(
-                            [portfolio_df, pd.DataFrame([new_row])],
-                            ignore_index=True,
-                        )
-
-                    st.session_state["analysis_portfolio"] = portfolio_df
-                    st.success(
-                        f"Activo '{new_row['Name']}' añadido/actualizado en la cartera de análisis "
-                        f"con {new_row['Value_€']:.2f} €."
+                    st.caption(
+                        "This is a simple simulation of the **gross value of the savings pot month by month** with growing contributions. "
+                        "It does not model real market volatility, changing tax regimes, or variable returns."
                     )
 
-        st.markdown("---")
-        st.subheader("📂 Cartera de análisis actual")
-
-        portfolio_df = st.session_state["analysis_portfolio"].copy()
-
-        if portfolio_df.empty:
-            st.info("Todavía no hay activos en la cartera de análisis.")
-        else:
-            # Permitimos editar solo la columna de valor para retocar manualmente
-            editable_df = portfolio_df.copy()
-            editable_df = st.data_editor(
-                editable_df,
-                column_config={
-                    "Value_€": st.column_config.NumberColumn(
-                        "Valor actual (€)",
-                        min_value=0.0,
-                        step=100.0,
-                    )
-                },
-                disabled=[
-                    "ISIN",
-                    "Name",
-                    "Type",
-                    "Region",
-                    "Country",
-                    "ETF_Provider",
-                    "ETF_Subtype",
-                    "Currency_Name",
-                ],
-                use_container_width=True,
-                key="analysis_portfolio_editor",
-            )
-
-            # Actualizamos sesión con posibles cambios en valores
-            st.session_state["analysis_portfolio"] = editable_df
-            portfolio_df = editable_df
-
-            total_value = float(portfolio_df["Value_€"].sum())
-            st.markdown(f"**Valor total de la cartera de análisis:** {total_value:,.2f} €")
-
-            if st.button("📊 Calcular estadísticas de la cartera de análisis"):
-                if total_value <= 0:
-                    st.error("El valor total de la cartera debe ser mayor que 0 €.")
-                else:
-                    # Calculamos pesos
-                    portfolio_df = portfolio_df.copy()
-                    portfolio_df["Weight_%"] = portfolio_df["Value_€"] / total_value * 100.0
-
-                    st.markdown("### 1️⃣ Top 10 posiciones por peso")
-                    top10 = portfolio_df.sort_values("Weight_%", ascending=False).head(10)
-                    st.dataframe(
-                        top10[
-                            ["Name", "ISIN", "Type", "Region", "Currency_Name", "Value_€", "Weight_%"]
-                        ],
-                        use_container_width=True,
-                    )
-
-                    # ==========================
-                    # DETECCIÓN TEMA STREAMLIT
-                    # ==========================
-                    theme_base = st.get_option("theme.base")
-                    text_color = st.get_option("theme.textColor")
-                    if theme_base == "dark" or not text_color:
-                        text_color = "#FFFFFF"
-                    else:
-                        text_color = text_color or "#000000"
-
-                    # ==========================
-                    # 2️⃣ Distribución por región
-                    # ==========================
-                    st.markdown("### 2️⃣ Distribución por región")
-                    region_expo = (
-                        portfolio_df.groupby("Region", dropna=False)["Value_€"]
-                        .sum()
-                        .reset_index()
-                    )
-                    region_expo["Weight_%"] = region_expo["Value_€"] / total_value * 100.0
-
-                    fig_reg, ax_reg = plt.subplots()
-                    fig_reg.patch.set_facecolor("none")
-                    ax_reg.set_facecolor("none")
-
-                    wedges, texts, autotexts = ax_reg.pie(
-                        region_expo["Weight_%"],
-                        labels=region_expo["Region"].fillna("Desconocida"),
-                        autopct="%1.1f%%",
-                        startangle=90,
-                    )
-                    ax_reg.axis("equal")
-
-                    # Textos del pie adaptados al tema
-                    for t in texts + autotexts:
-                        t.set_color(text_color)
-
-                    st.pyplot(fig_reg)
-
-                    # ==========================
-                    # 3️⃣ Distribución por tipo
-                    # ==========================
-                    st.markdown("### 3️⃣ Distribución por tipo de activo")
-                    type_expo = (
-                        portfolio_df.groupby("Type", dropna=False)["Value_€"]
-                        .sum()
-                        .reset_index()
-                    )
-                    type_expo["Weight_%"] = type_expo["Value_€"] / total_value * 100.0
-
-                    fig_type, ax_type = plt.subplots()
-                    fig_type.patch.set_facecolor("none")
-                    ax_type.set_facecolor("none")
-
-                    ax_type.bar(
-                        type_expo["Type"].fillna("Desconocido"),
-                        type_expo["Weight_%"],
-                    )
-                    ax_type.set_ylabel("% de la cartera")
-                    ax_type.set_xlabel("Tipo de activo")
-                    plt.xticks(rotation=30, ha="right")
-
-                    # Colores de texto y ejes según tema
-                    ax_type.tick_params(colors=text_color)
-                    ax_type.yaxis.label.set_color(text_color)
-                    ax_type.xaxis.label.set_color(text_color)
-                    for spine in ax_type.spines.values():
-                        spine.set_color(text_color)
-
-                    st.pyplot(fig_type)
-
-                    # ==========================
-                    # 4️⃣ Distribución por divisa
-                    # ==========================
-                    st.markdown("### 4️⃣ Distribución por divisa")
-                    currency_expo = (
-                        portfolio_df.groupby("Currency_Name", dropna=False)["Value_€"]
-                        .sum()
-                        .reset_index()
-                    )
-                    currency_expo["Weight_%"] = currency_expo["Value_€"] / total_value * 100.0
-
-                    fig_cur, ax_cur = plt.subplots()
-                    fig_cur.patch.set_facecolor("none")
-                    ax_cur.set_facecolor("none")
-
-                    ax_cur.bar(
-                        currency_expo["Currency_Name"].fillna("Desconocida"),
-                        currency_expo["Weight_%"],
-                    )
-                    ax_cur.set_ylabel("% de la cartera")
-                    ax_cur.set_xlabel("Divisa")
-                    plt.xticks(rotation=30, ha="right")
-
-                    ax_cur.tick_params(colors=text_color)
-                    ax_cur.yaxis.label.set_color(text_color)
-                    ax_cur.xaxis.label.set_color(text_color)
-                    for spine in ax_cur.spines.values():
-                        spine.set_color(text_color)
-
-                    st.pyplot(fig_cur)
-
-                    # ==========================
-                    # 5️⃣ Distribución subtipo ETF
-                    # ==========================
-                    st.markdown("### 5️⃣ Distribución por subtipo de ETF (solo ETFs)")
-                    etf_only = portfolio_df[portfolio_df["Type"] == "ETF"].copy()
-                    if etf_only.empty:
-                        st.info("No hay ETFs en esta cartera de análisis, así que no puede mostrarse esta distribución.")
-                    else:
-                        etf_sub_expo = (
-                            etf_only.groupby("ETF_Subtype", dropna=False)["Value_€"]
-                            .sum()
-                            .reset_index()
-                        )
-                        etf_sub_expo["Weight_%"] = etf_sub_expo["Value_€"] / total_value * 100.0
-
-                        fig_sub, ax_sub = plt.subplots()
-                        fig_sub.patch.set_facecolor("none")
-                        ax_sub.set_facecolor("none")
-
-                        ax_sub.bar(
-                            etf_sub_expo["ETF_Subtype"].fillna("Sin clasificar"),
-                            etf_sub_expo["Weight_%"],
-                        )
-                        ax_sub.set_ylabel("% de la cartera")
-                        ax_sub.set_xlabel("Subtipo de ETF")
-                        plt.xticks(rotation=30, ha="right")
-
-                        ax_sub.tick_params(colors=text_color)
-                        ax_sub.yaxis.label.set_color(text_color)
-                        ax_sub.xaxis.label.set_color(text_color)
-                        for spine in ax_sub.spines.values():
-                            spine.set_color(text_color)
-
-                        st.pyplot(fig_sub)
-                    
-
-    # --- Reset TAB 4 ---
+    # --------------------------
+    # Saved housing plans
+    # --------------------------
     st.markdown("---")
-    if st.button("🔄 Restablecer análisis", key="reset_tab4"):
-        if "analysis_portfolio" in st.session_state:
-            del st.session_state["analysis_portfolio"]
+    st.markdown("### 💾 Saved housing plans")
+
+    plans = load_plans()
+    planes_viv = plans.get("vivienda", {})
+
+    col_viv_1, col_viv_2 = st.columns([2, 2])
+    with col_viv_1:
+        nombre_plan_viv = st.text_input(
+            "Name for this housing plan",
+            value="",
+            key="housing_plan_name",
+        )
+    with col_viv_2:
+        opciones_planes_viv = ["(none)"] + sorted(planes_viv.keys()) if isinstance(planes_viv, dict) else ["(none)"]
+        plan_viv_seleccionado = st.selectbox(
+            "Load an existing housing plan",
+            options=opciones_planes_viv,
+            key="housing_plan_select",
+        )
+
+    col_viv_save, col_viv_load = st.columns(2)
+    with col_viv_save:
+        if st.button("💾 Save housing plan"):
+            if not nombre_plan_viv:
+                st.error("Please enter a name for the housing plan before saving.")
+            else:
+                if not isinstance(plans.get("vivienda"), dict):
+                    plans["vivienda"] = {}
+                plans["vivienda"][nombre_plan_viv] = {
+                    "house_price": house_price,
+                    "entrada_pct": entrada_pct,
+                    "gastos_pct": gastos_pct,
+                    "years_house": int(years_house),
+                    "ahorro_actual_entrada": ahorro_actual_entrada,
+                    "anual_return_house_input": anual_return_house_input,
+                    "apply_tax_house": apply_tax_house,
+                    "tipo_hipoteca_input": tipo_hipoteca_input,
+                    "plazo_hipoteca_years": int(plazo_hipoteca_years),
+                    "modo_house": modo_house,
+                    "initial_monthly_house": initial_monthly_house,
+                }
+                save_plans(plans)
+                st.success(f"Housing plan '{nombre_plan_viv}' saved successfully.")
+    with col_viv_load:
+        if st.button("📂 Load housing plan"):
+            if plan_viv_seleccionado == "(none)":
+                st.warning("Select a housing plan to load.")
+            else:
+                plan = planes_viv.get(plan_viv_seleccionado)
+                if not plan:
+                    st.error("The selected housing plan could not be loaded.")
+                else:
+                    st.session_state["pending_plan_viv"] = plan
+                    st.rerun()
+
+    # --- Reset TAB 3 ---
+    st.markdown("---")
+    if st.button("🔄 Reset this tab", key="reset_tab3"):
+        keys_viv = [
+            "Precio estimado de la vivienda (€)",
+            "% de entrada que exige el banco (%)",
+            "Años hasta la compra",
+            "Ahorro ya destinado a la entrada (€)",
+            "Rentabilidad anual estimada del ahorro para la entrada (%)",
+            "Tener en cuenta impuestos vivienda",
+            "Tipo interés hipoteca",
+            "Plazo hipoteca años",
+            "Modo de aportación vivienda",
+            "Aportación inicial vivienda",
+        ]
+        for key in keys_viv:
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
