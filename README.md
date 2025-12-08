@@ -68,28 +68,44 @@ OpenPyXL
 ## Repository Structure
 
 app.py                         Main application
+
 asset_universe.csv            Unified asset universe
+
 asset_universe_builder.py     Universe generation tool
+
 carteras.json                 Saved user portfolios
+
 planes.json                   Saved long-term plans
+
 activos_custom.json           User-defined custom assets
+
 Instrument_Universe_DE_en.pdf Source reference for asset universe
+
 requirements.txt              Python dependencies
+
 
 ## Installation
 
 Clone repository:
 
+```
 git clone https://github.com/MarcosIbanezFandos/Portfolio-Rebalancer.git
 cd Portfolio-Rebalancer
+```
 
 Install dependencies:
 
+```
 pip install -r requirements.txt
+```
+
 
 Run application:
 
+```
 streamlit run app.py
+```
+
 
 ## Rebalancing Logic (Simplified)
 
@@ -105,11 +121,13 @@ The system applies:
 
 Example call:
 
+```
 contrib_plan = compute_contribution_plan(
 portfolio=port,
 monthly_contribution=monthly_contribution,
 rebalance_threshold=rebalance_threshold
 )
+```
 
 ## Asset Universe & Search Engine
 
@@ -127,13 +145,18 @@ Special logic allows matching strings like S&P 500 even when searched without "&
 
 Users may extend the universe through:
 
+```
 activos_custom.json
+```
+
 
 ## Saving & Loading Portfolios
 
 Saved portfolios are stored in:
 
+```
 carteras.json
+```
 
 Each entry contains asset name, ISIN, type, value and target weight.
 
@@ -149,4 +172,6 @@ To self-host:
 · Upload universe + JSON files  
 · Run:
 
+```
 streamlit run app.py
+```
