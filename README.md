@@ -1,6 +1,6 @@
 # Portfolio Rebalancer
 
-Tool for investment portfolio rebalancing, long-term wealth planning, housing-purchase savings forecasting and asset-level analytics.
+Tool for investment portfolio rebalancing, long-term wealth planning and housing-purchase savings forecasting.
 
 Production deployment:  
 https://ibanez-capital.streamlit.app/
